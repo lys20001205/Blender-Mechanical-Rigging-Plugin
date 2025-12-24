@@ -17,11 +17,11 @@ setlocal EnableDelayedExpansion
 
 :: 1. Path to Blender's Python Executable
 :: Example: C:\Program Files\Blender Foundation\Blender 4.3\4.3\python\bin\python.exe
-set "BLENDER_PYTHON="
+set "BLENDER_PYTHON=E:\blender\blender-4.3.2-windows-x64\blender-4.3.2-windows-x64\4.3\python\bin\python.exe"
 
 :: 2. Path to Blender Addons Directory
 :: Example: C:\Users\<YourUser>\AppData\Roaming\Blender Foundation\Blender\4.3\scripts\addons
-set "BLENDER_ADDONS="
+set "BLENDER_ADDONS=C:\Users\mice\AppData\Roaming\Blender Foundation\Blender\4.3\scripts\addons"
 
 :: --- END OF CONFIGURATION ---
 
