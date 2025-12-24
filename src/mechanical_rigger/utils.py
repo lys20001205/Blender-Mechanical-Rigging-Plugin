@@ -283,7 +283,7 @@ def create_armature(context, rig_roots, symmetric_origin):
         pbone = amt_obj.pose.bones.get(bone.name)
         if not pbone: continue
         
-        if "Hinge" in node.name or "Hinge" in node.origin_obj.name:
+        if "Hinge_" in node.name or "Hinge_" in node.origin_obj.name:
             c = pbone.constraints.new('LIMIT_ROTATION')
             c.use_limit_x = True
             c.use_limit_y = True
