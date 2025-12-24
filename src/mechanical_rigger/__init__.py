@@ -8,6 +8,16 @@ bl_info = {
     "category": "Rigging",
 }
 
+# --- REMOTE DEBUGGING SETUP (Uncomment to enable) ---
+# import sys
+# try:
+#     import pydevd_pycharm
+#     # Make sure the port matches your Rider "Python Debug Server" configuration
+#     pydevd_pycharm.settrace('localhost', port=5678, stdoutToServer=True, stderrToServer=True, suspend=False)
+# except ImportError:
+#     pass
+# ----------------------------------------------------
+
 from . import operators
 from . import ui
 
