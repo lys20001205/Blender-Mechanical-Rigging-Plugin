@@ -1,78 +1,90 @@
-﻿# Debugging Mechanical Rigger in JetBrains Rider
+Debugging Mechanical Rigger in JetBrains Rider
 
-This guide explains how to set up a professional debugging environment for the Mechanical Rigger plugin using JetBrains Rider. This setup allows you to:
-1.  **Edit code in Rider and see changes immediately** (no more zipping/installing).
-2.  **Set breakpoints and step through code** running inside Blender.
-3.  **Reload the plugin** without restarting Blender.
+This guide explains the workflow for developing the Mechanical Rigger plugin in JetBrains Rider.
 
----
+Since Rider's Python support (via the Community plugin) does not always support "Remote Debugging" configurations, we recommend a Launch-based workflow. You will launch Blender directly from Rider, running a test script that exercises your code.
 
-## 1. Install the Python Plugin for Rider
+1. Prerequisites
 
-The "Python Debug Server" configuration is missing by default because Rider requires the Python plugin.
+Install Rider.
 
-1.  Open Rider.
-2.  Go to **File > Settings** (or `Ctrl+Alt+S`).
-3.  Navigate to **Plugins**.
-4.  Click the **Marketplace** tab.
-5.  Search for **"Python"**.
-6.  Install the **Python Community** plugin (published by JetBrains).
-7.  **Restart Rider**.
+Install the Python Plugin:
 
----
+Go to File > Settings > Plugins.
 
-## 2. Setup (Windows)
+Search for "Python Community" and install it.
 
-We have provided a script to automatically link the source code to Blender and install the required debugger tools.
+Restart Rider.
 
-1.  Close Blender.
-2.  Navigate to the `tools/` folder in this repository.
-3.  **Right-click `setup_dev_env.bat` and select Edit.**
-4.  Update the `BLENDER_PYTHON` and `BLENDER_ADDONS` variables at the top of the file to match your system paths.
-5.  Save and double-click `setup_dev_env.bat` to run it.
-    *   This script will:
-        *   Enable `pip` in your Blender installation.
-        *   Install `pydevd-pycharm` (the debugger) into Blender's Python environment.
-        *   Create a "Junction" (Symlink) so Blender loads the code directly from your repo.
+2. Environment Setup (One-Time)
 
----
+We need to link your source code to Blender so changes in Rider appear immediately.
 
-## 3. Run Configuration (Auto-Setup)
+Navigate to the tools/ folder in this repository.
 
-We have automatically included a Run Configuration for you.
+Right-click setup_dev_env.bat and select Edit.
 
-1.  **Restart Rider** (if it was open).
-2.  Look at the Run/Debug toolbar at the top right.
-3.  Select **Blender Debug** from the dropdown list.
-    *   If you don't see it, ensure the **Python Community** plugin is installed and you have restarted Rider.
+Update the BLENDER_ADDONS variable to match your system path (e.g., C:\Users\<User>\AppData\Roaming\Blender Foundation\Blender\4.3\scripts\addons).
 
-> **Manual Setup (Only if auto-setup fails):**
-> If the "Blender Debug" configuration doesn't appear:
-> 1. Go to **Run > Edit Configurations**.
-> 2. Add a new **Python Remote Debug** (or "Python Debug Server") configuration.
-> 3. Set Port to `5678`.
-> 4. Map your local `src/mechanical_rigger` folder to the Blender addons folder.
+Run the script as Administrator.
 
----
+This creates a symbolic link. You do not need to zip/install the addon ever again.
 
-## 4. Debugging Workflow
+3. Configure the Test Launcher
 
-1.  **Start the Debug Server** in Rider:
-    *   Select the `Blender Debug` configuration.
-    *   Click the **Debug** icon (bug).
-    *   The console should say: `Waiting for process connection...`
+Instead of attaching a debugger, we will script Blender to open and run test/test_rigging.py.
 
-2.  **Launch Blender**:
-    *   Open Blender.
-    *   If the plugin is enabled, it will attempt to connect immediately.
-    *   Look at the Rider console. If successful, it will say `Connected to pydev debugger`.
+Step A: Configure the Batch Script
 
-3.  **Edit and Reload**:
-    *   Make changes to the code in Rider.
-    *   In Blender, press **F3** and search for **"Reload Scripts"**.
-    *   Alternatively, use the **"Reload Addon"** button in the Mechanical Rigger panel (if available).
+Open tools/run_test.bat in Rider.
 
-## Troubleshooting
+Edit the BLENDER_EXE variable to point to your Blender installation (e.g., C:\Program Files\Blender Foundation\Blender 4.3\blender.exe).
 
-*   **Port already in use**: Ensure no other debug session is running. Change the port in both Rider and `__init__.py` if needed.
-*   **Module not found**: If Blender says `No module named 'pydevd_pycharm'`, re-run the `setup_dev_env.bat` script and check for errors.
+Step B: Create the Run Configuration
+
+In Rider, go to Run > Edit Configurations....
+
+Click the + button and select Shell Script.
+
+Name it: Run Blender Test.
+
+Execute: Select Script file.
+
+Script path: Browse to tools/run_test.bat in your project.
+
+Interpreter path: cmd.exe (or C:\Windows\System32\cmd.exe).
+
+Interpreter options: /c (Crucial for batch files to run and terminate correctly).
+
+Click OK.
+
+Alternative (External Tool):
+If the "Shell Script" configuration gives "Interpreter not found" errors:
+
+Go to File > Settings > Tools > External Tools.
+
+Add a new tool named "Run Blender Test".
+
+Program: Browse to tools/run_test.bat.
+
+Working directory: $ProjectFileDir$\tools.
+
+Use this External Tool via the Tools menu.
+
+4. Development Workflow
+
+Edit Code: Make changes to your python files in src/mechanical_rigger/.
+
+Run Test: Click the Run (Play) button next to your Run Blender Test configuration.
+
+Blender will launch.
+
+The test/test_rigging.py script will run automatically.
+
+Output (Pass/Fail) will appear in the Run Dashboard / Console in Rider.
+
+Review: Check the console for "PASS" or "FAIL" messages.
+
+Note on Breakpoints
+
+Because we are launching an external process via a batch script, Rider's Python debugger may not hit breakpoints automatically in this mode. Use print() statements to debug logic errors, which will show up clearly in the Rider console.
