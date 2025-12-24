@@ -1,66 +1,78 @@
 ﻿# Debugging Mechanical Rigger in JetBrains Rider
 
-To debug this Blender addon using JetBrains Rider, you need to use **Remote Debugging**. This involves running a debug server in Rider and connecting to it from Blender.
+This guide explains how to set up a professional debugging environment for the Mechanical Rigger plugin using JetBrains Rider. This setup allows you to:
+1.  **Edit code in Rider and see changes immediately** (no more zipping/installing).
+2.  **Set breakpoints and step through code** running inside Blender.
+3.  **Reload the plugin** without restarting Blender.
 
-## Prerequisites
+---
 
-1.  **JetBrains Rider** (or PyCharm Professional).
-2.  **Blender** installed.
-3.  **pydevd-pycharm** package installed in Blender's Python environment.
+## 1. Install the Python Plugin for Rider
 
-## Step 1: Install `pydevd-pycharm` in Blender
+The "Python Debug Server" configuration is missing by default because Rider requires the Python plugin.
 
-Blender uses its own bundled Python. You must install the debugger package into *that* specific environment.
+1.  Open Rider.
+2.  Go to **File > Settings** (or `Ctrl+Alt+S`).
+3.  Navigate to **Plugins**.
+4.  Click the **Marketplace** tab.
+5.  Search for **"Python"**.
+6.  Install the **Python Community** plugin (published by JetBrains).
+7.  **Restart Rider**.
 
-1.  Locate your Blender installation's Python executable.
-    *   **Windows**: `C:\Program Files\Blender Foundation\Blender 4.3\4.3\python\bin\python.exe`
-    *   **macOS**: `/Applications/Blender.app/Contents/Resources/4.3/python/bin/python3.10` (Adjust version as needed)
-    *   **Linux**: `/path/to/blender/4.3/python/bin/python3.10`
+---
 
-2.  Open a terminal/command prompt and run:
-    ```bash
-    # Replace <BLENDER_PYTHON_PATH> with the path found above
-    "<BLENDER_PYTHON_PATH>" -m pip install pydevd-pycharm~=241.14494.240
-    ```
-    *Note: The version of `pydevd-pycharm` must match the version supported by your Rider installation. You can find the required version in the Rider Run Configuration setup (see Step 2).*
+## 2. Setup (Windows)
 
-## Step 2: Configure Rider
+We have provided a script to automatically link the source code to Blender and install the required debugger tools.
 
-1.  Open this project in Rider.
-2.  Go to **Run > Edit Configurations...**.
-3.  Click **+** and select **Python Debug Server**.
-4.  Name it "Blender Debug".
-5.  Set **Port** to `5678` (or any free port).
-6.  **Important**: Note the instructions displayed in the configuration window regarding the `pydevd-pycharm` version. If it asks for a specific version, install that one in Step 1.
-7.  Uncheck "Redirect output to console" if you want to see Blender's logs in Blender's console, or keep it checked to see them in Rider.
-8.  Click **OK**.
+1.  Close Blender.
+2.  Navigate to the `tools/` folder in this repository.
+3.  **Right-click `setup_dev_env.bat` and select Edit.**
+4.  Update the `BLENDER_PYTHON` and `BLENDER_ADDONS` variables at the top of the file to match your system paths.
+5.  Save and double-click `setup_dev_env.bat` to run it.
+    *   This script will:
+        *   Enable `pip` in your Blender installation.
+        *   Install `pydevd-pycharm` (the debugger) into Blender's Python environment.
+        *   Create a "Junction" (Symlink) so Blender loads the code directly from your repo.
 
-## Step 3: Enable Debugging in the Addon
+---
 
-1.  Open `src/mechanical_rigger/__init__.py`.
-2.  Uncomment the Debugging Block at the top of the file (instructions provided in the file).
-    ```python
-    # REMOTE DEBUGGING SETUP
-    # import sys
-    # if "pydevd_pycharm" not in sys.modules:
-    #     import pydevd_pycharm
-    #     pydevd_pycharm.settrace('localhost', port=5678, stdoutToServer=True, stderrToServer=True, suspend=False)
-    ```
-3.  Ensure the `port` matches what you set in Rider (default `5678`).
+## 3. Run Configuration (Auto-Setup)
 
-## Step 4: Start Debugging
+We have automatically included a Run Configuration for you.
 
-1.  In Rider, select the "Blender Debug" configuration and click **Debug** (the bug icon).
-    *   The Console should say: `Starting debug server at port 5678... Waiting for process connection...`
-2.  Start **Blender**.
-3.  If the plugin is already enabled, the connection might happen immediately on startup.
-4.  If not, enable (or disable and re-enable) the "Mechanical Rigger" addon in **Edit > Preferences > Add-ons**.
-5.  Check Rider. It should say "Connected to pydevd".
-6.  Set breakpoints in Rider (e.g., in `operators.py` inside `execute`).
-7.  Run the operator in Blender. Rider should pause execution at your breakpoint.
+1.  **Restart Rider** (if it was open).
+2.  Look at the Run/Debug toolbar at the top right.
+3.  Select **Blender Debug** from the dropdown list.
+    *   If you don't see it, ensure the **Python Community** plugin is installed and you have restarted Rider.
+
+> **Manual Setup (Only if auto-setup fails):**
+> If the "Blender Debug" configuration doesn't appear:
+> 1. Go to **Run > Edit Configurations**.
+> 2. Add a new **Python Remote Debug** (or "Python Debug Server") configuration.
+> 3. Set Port to `5678`.
+> 4. Map your local `src/mechanical_rigger` folder to the Blender addons folder.
+
+---
+
+## 4. Debugging Workflow
+
+1.  **Start the Debug Server** in Rider:
+    *   Select the `Blender Debug` configuration.
+    *   Click the **Debug** icon (bug).
+    *   The console should say: `Waiting for process connection...`
+
+2.  **Launch Blender**:
+    *   Open Blender.
+    *   If the plugin is enabled, it will attempt to connect immediately.
+    *   Look at the Rider console. If successful, it will say `Connected to pydev debugger`.
+
+3.  **Edit and Reload**:
+    *   Make changes to the code in Rider.
+    *   In Blender, press **F3** and search for **"Reload Scripts"**.
+    *   Alternatively, use the **"Reload Addon"** button in the Mechanical Rigger panel (if available).
 
 ## Troubleshooting
 
-*   **Connection Refused**: Ensure Rider's debug server is running *before* you start/enable the addon in Blender.
-*   **Version Mismatch**: If you get errors about protocol versions, double-check that the `pip install pydevd-pycharm` version matches what Rider expects.
-*   **Path Mappings**: If breakpoints aren't hitting, you might need to configure path mappings in the Run Configuration in Rider to map the local source folder to the installed addon folder (though usually not necessary if you are loading the addon from source).
+*   **Port already in use**: Ensure no other debug session is running. Change the port in both Rider and `__init__.py` if needed.
+*   **Module not found**: If Blender says `No module named 'pydevd_pycharm'`, re-run the `setup_dev_env.bat` script and check for errors.
