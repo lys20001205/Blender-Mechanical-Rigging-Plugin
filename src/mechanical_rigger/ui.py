@@ -63,6 +63,11 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
         else:
             box.label(text="Select the Rig to configure.", icon='INFO')
 
+        # Developer Tools
+        box = layout.box()
+        box.label(text="Developer")
+        box.operator("mechanig.reload_addon", text="Reload Scripts", icon='FILE_REFRESH')
+
 class MechRigBoneSettings(bpy.types.PropertyGroup):
     use_ik: bpy.props.BoolProperty(
         name="Use IK", description="Create an Inverse Kinematics setup for this bone", default=False
