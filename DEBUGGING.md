@@ -37,22 +37,21 @@ We have provided a script to automatically link the source code to Blender and i
 
 ---
 
-## 3. Configure Rider Debug Server
+## 3. Run Configuration (Auto-Setup)
 
-Once the Python plugin is installed:
+We have automatically included a Run Configuration for you.
 
-1.  In Rider, go to **Run > Edit Configurations...**.
-2.  Click the **+** (Add New) button.
-3.  Search for and select **Python Debug Server**.
-4.  Configure it as follows:
-    *   **Name**: `Blender Debug`
-    *   **IDE Host Name**: `localhost`
-    *   **Port**: `5678` (Must match the port in `__init__.py`)
-5.  **Path Mappings**:
-    *   Click the folder icon or `...`.
-    *   **Local Path**: The absolute path to your `src/mechanical_rigger` folder (e.g., `E:\Projects\mechanical-rigger\src\mechanical_rigger`).
-    *   **Remote Path**: The path where Blender sees the addon (e.g., `C:\Users\mice\AppData\Roaming\Blender Foundation\Blender\4.3\scripts\addons\mechanical_rigger`).
-6.  Click **Apply** / **OK**.
+1.  **Restart Rider** (if it was open).
+2.  Look at the Run/Debug toolbar at the top right.
+3.  Select **Blender Debug** from the dropdown list.
+    *   If you don't see it, ensure the **Python Community** plugin is installed and you have restarted Rider.
+
+> **Manual Setup (Only if auto-setup fails):**
+> If the "Blender Debug" configuration doesn't appear:
+> 1. Go to **Run > Edit Configurations**.
+> 2. Add a new **Python Remote Debug** (or "Python Debug Server") configuration.
+> 3. Set Port to `5678`.
+> 4. Map your local `src/mechanical_rigger` folder to the Blender addons folder.
 
 ---
 

@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 :: ========================================================
 :: MECHANICAL RIGGER - DEVELOPER SETUP
@@ -17,11 +17,11 @@ setlocal
 
 :: 1. Path to Blender's Python Executable
 :: Example: C:\Program Files\Blender Foundation\Blender 4.3\4.3\python\bin\python.exe
-set BLENDER_PYTHON=""
+set "BLENDER_PYTHON="
 
 :: 2. Path to Blender Addons Directory
 :: Example: C:\Users\<YourUser>\AppData\Roaming\Blender Foundation\Blender\4.3\scripts\addons
-set BLENDER_ADDONS=""
+set "BLENDER_ADDONS="
 
 :: --- END OF CONFIGURATION ---
 
@@ -39,7 +39,7 @@ echo Mechanical Rigger Developer Setup
 echo ========================================================
 
 :: Check if paths are set
-if %BLENDER_PYTHON% == "" (
+if "%BLENDER_PYTHON%"=="" (
     echo [ERROR] BLENDER_PYTHON path is not set.
     echo Please right-click this script, select Edit, and set your paths.
     echo.
@@ -47,7 +47,7 @@ if %BLENDER_PYTHON% == "" (
     pause
     exit /b 1
 )
-if %BLENDER_ADDONS% == "" (
+if "%BLENDER_ADDONS%"=="" (
     echo [ERROR] BLENDER_ADDONS path is not set.
     echo Please right-click this script, select Edit, and set your paths.
     echo.
@@ -59,9 +59,9 @@ if %BLENDER_ADDONS% == "" (
 echo.
 echo 1. Checking Python Environment...
 
-if not exist %BLENDER_PYTHON% (
+if not exist "%BLENDER_PYTHON%" (
     echo [ERROR] Blender Python not found at:
-    echo %BLENDER_PYTHON%
+    echo "%BLENDER_PYTHON%"
     echo Please verify the path in the script.
     pause
     exit /b 1
@@ -70,16 +70,16 @@ if not exist %BLENDER_PYTHON% (
 echo Found Blender Python.
 
 echo.
-echo 2. Installing Dependencies (pip & pydevd-pycharm)...
+echo 2. Installing Dependencies (pip ^& pydevd-pycharm)...
 
 :: Ensure pip is installed
-%BLENDER_PYTHON% -m ensurepip --default-pip
+"%BLENDER_PYTHON%" -m ensurepip --default-pip
 if %errorlevel% neq 0 (
     echo [WARNING] ensurepip failed. Pip might already be installed. Continuing...
 )
 
 :: Install debugger
-%BLENDER_PYTHON% -m pip install pydevd-pycharm
+"%BLENDER_PYTHON%" -m pip install pydevd-pycharm
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to install pydevd-pycharm.
     pause
@@ -96,7 +96,9 @@ set "TARGET_DIR=%TARGET_DIR:"=%"
 
 :: Check if target already exists
 if exist "%TARGET_DIR%" (
-    echo [INFO] Target directory already exists: "%TARGET_DIR%"
+    echo [INFO] Target directory already exists:
+    echo "%TARGET_DIR%"
+    echo.
     echo Please manually delete it if it is a regular folder/zip installation.
     echo If it is already a symlink, you are good to go.
 ) else (
@@ -106,7 +108,7 @@ if exist "%TARGET_DIR%" (
 
     mklink /J "%TARGET_DIR%" "%SRC_PATH%"
 
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo [ERROR] Failed to create symlink. You might need to run this script as Administrator.
         pause
         exit /b 1
@@ -117,9 +119,9 @@ if exist "%TARGET_DIR%" (
 echo.
 echo ========================================================
 echo Setup Complete!
-echo 1. Open Rider and install "Python Community" plugin.
-echo 2. Create "Python Debug Server" config (localhost:5678).
-echo 3. Start Debugger in Rider.
+echo 1. Restart Rider (to load the new Run Configuration).
+echo 2. Select "Blender Debug" from the top toolbar.
+echo 3. Click the Debug (bug) icon.
 echo 4. Start Blender.
 echo ========================================================
 pause
