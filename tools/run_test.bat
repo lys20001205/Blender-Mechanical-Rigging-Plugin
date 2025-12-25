@@ -5,7 +5,7 @@ setlocal
 :: MECHANICAL RIGGER - TEST LAUNCHER
 :: ========================================================
 :: This script launches Blender.
-:: If a test script is found/provided, it runs it.
+:: If a test script is provided as an argument, it runs it.
 :: Otherwise, it opens Blender for manual testing.
 ::
 :: USAGE:
@@ -24,11 +24,7 @@ set "REPO_ROOT=%SCRIPT_DIR%..\"
 for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 
 :: Check if user provided an argument
-if "%~1" neq "" (
-    set "TEST_SCRIPT=%~1"
-) else (
-    set "TEST_SCRIPT=%REPO_ROOT%test\test_rigging.py"
-)
+set "TEST_SCRIPT=%~1"
 
 :: --- CHECKS ---
 if not exist "%BLENDER_EXE%" (
@@ -44,13 +40,21 @@ echo.
 echo ========================================================
 echo Launching Blender...
 
-if exist "%TEST_SCRIPT%" (
-    echo Running Test Script: "%TEST_SCRIPT%"
-    echo ========================================================
-    echo.
-    "%BLENDER_EXE%" --python "%TEST_SCRIPT%"
+if "%TEST_SCRIPT%" neq "" (
+    if exist "%TEST_SCRIPT%" (
+        echo Running Test Script: "%TEST_SCRIPT%"
+        echo ========================================================
+        echo.
+        "%BLENDER_EXE%" --python "%TEST_SCRIPT%"
+    ) else (
+        echo [ERROR] Specified test script not found: "%TEST_SCRIPT%"
+        echo Launching Blender in interactive mode...
+        echo ========================================================
+        echo.
+        "%BLENDER_EXE%"
+    )
 ) else (
-    echo No test script found at: "%TEST_SCRIPT%"
+    echo No test script argument provided.
     echo Launching Blender in interactive mode...
     echo ========================================================
     echo.
