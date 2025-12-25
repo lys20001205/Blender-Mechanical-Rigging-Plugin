@@ -53,7 +53,8 @@ if exist "%TEST_SCRIPT%" (
     "%BLENDER_EXE%" --python "%TEST_SCRIPT%"
 ) else (
     echo [ERROR] Script not found: "%TEST_SCRIPT%"
-    echo Launching Blender in interactive mode (Addon might not be loaded)...
+    echo Launching Blender in interactive mode...
+    echo Note: Addon might not be loaded.
     echo ========================================================
     echo.
     "%BLENDER_EXE%"
