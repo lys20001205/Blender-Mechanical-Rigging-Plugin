@@ -1,4 +1,4 @@
-﻿import bpy
+import bpy
 from . import utils
 
 class MECH_RIG_OT_AutoRig(bpy.types.Operator):

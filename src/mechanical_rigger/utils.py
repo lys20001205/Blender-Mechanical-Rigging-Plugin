@@ -399,7 +399,7 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
     # Move Armature and Mesh to Collection
     def ensure_in_collection(obj, target_col):
         # Unlink from other collections
-        for col in obj.users_collection:
+        for col in list(obj.users_collection):
             if col != target_col:
                 col.objects.unlink(obj)
         if target_col not in obj.users_collection:

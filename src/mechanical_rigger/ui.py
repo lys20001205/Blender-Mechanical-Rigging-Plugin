@@ -1,4 +1,4 @@
-﻿import bpy
+import bpy
 
 class MechRigBoneItem(bpy.types.PropertyGroup):
     """Data class for the UI List."""
