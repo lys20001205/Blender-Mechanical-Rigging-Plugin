@@ -373,10 +373,8 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
     for o in processed_objects:
         o.select_set(True)
     
-    ctx = context.copy()
-    ctx['active_object'] = processed_objects[0]
-    ctx['selected_editable_objects'] = processed_objects
-    bpy.ops.object.join(ctx)
+    context.view_layer.objects.active = processed_objects[0]
+    bpy.ops.object.join()
     
     combined_mesh = processed_objects[0]
     combined_mesh.name = "Rigged_Mesh"
