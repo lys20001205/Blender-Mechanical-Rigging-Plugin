@@ -406,8 +406,16 @@ def get_or_create_widget(name, type='CIRCLE'):
 
     if type == 'CIRCLE':
         bpy.ops.curve.primitive_nurbs_circle_add(radius=1.0)
+        # Circles are aligned to Global XY. Bone Y is the axis.
+        # We want the circle to be in the XZ plane (Normal Y).
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.curve.select_all(action='SELECT')
+        # Rotate 90 degrees around X axis
+        bpy.ops.transform.rotate(value=math.radians(90), orient_axis='X')
+        bpy.ops.object.mode_set(mode='OBJECT')
+
     elif type == 'BOX':
-        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        bpy.ops.mesh.primitive_cube_add(size=1.0) # 1.0 size = 0.5 radius
         bpy.context.object.display_type = 'WIRE'
     elif type == 'SPHERE':
         bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5)
@@ -445,6 +453,13 @@ def apply_controls(context, armature):
         armature.select_set(True)
 
         pbone.custom_shape = widget_obj
+
+        # Scale and Place Control Widget
+        # Align to Bone Length.
+        # 1.0 Unit Widget -> Scaled to Bone Length.
+        # Center it: (0, Length/2, 0)
+        pbone.custom_shape_scale_xyz = (pbone.length, pbone.length, pbone.length)
+        pbone.custom_shape_translation = (0, pbone.length * 0.5, 0)
 
         # 2. IK Setup
         if settings.use_ik:
@@ -485,8 +500,15 @@ def apply_controls(context, armature):
 
                         ik_pbone = armature.pose.bones.get(ik_target_name)
                         if ik_pbone:
+                            # IK Target Control
+                            # Should be centered on target (Head of IK Bone), so no translation needed if Widget is centered.
+                            # But our Widgets are centered at origin.
+                            # IK Bone Head is at the pivot point.
+                            # So we want the widget at (0,0,0) of IK Bone.
                             ik_pbone.custom_shape = get_or_create_widget("WGT_Bone_BOX", 'BOX')
+                            # Fixed reasonable scale for IK Handle
                             ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
+                            ik_pbone.custom_shape_translation = (0, 0, 0) # Ensure it's centered
                 else:
                     # Should not happen, but safe fallback
                     bpy.ops.object.mode_set(mode='POSE')
