@@ -114,6 +114,9 @@ class MECH_RIG_OT_EditWidgetTransform(bpy.types.Operator):
         temp_obj["mech_armature"] = obj.name
         temp_obj["mech_bone"] = pbone.name
 
+        # Switch to Object Mode to handle object selection
+        bpy.ops.object.mode_set(mode='OBJECT')
+
         # Select Temp Object
         bpy.ops.object.select_all(action='DESELECT')
         context.view_layer.objects.active = temp_obj

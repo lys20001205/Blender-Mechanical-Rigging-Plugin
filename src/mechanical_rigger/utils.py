@@ -462,12 +462,12 @@ def apply_controls(context, armature):
 
     ik_tasks = [] # List of (bone_name, ik_target_name, chain_length, settings)
 
-    # Lists for Cleanup
+    # Lists for Cleanup (Store DATA, not Objects, as Edit Mode invalidates objects)
     cleanup_ik_bones = [] # Names of _IK bones to remove
-    cleanup_ik_constraints = [] # Tuples of (pbone, constraint) to remove
+    cleanup_ik_constraints = [] # Tuples of (bone_name, constraint_name/type) to remove
 
     # Lists for Config
-    update_ik_locks = [] # Tuples of (pbone, limit_rot_constraint) to sync locks
+    update_ik_locks = [] # List of dicts with bone_name and lock settings
 
     global_scale = context.scene.mech_rig_widget_scale
 
@@ -554,7 +554,17 @@ def apply_controls(context, armature):
                 # Check Limit Rotation
                 for c in curr_bone.constraints:
                     if c.type == 'LIMIT_ROTATION':
-                        update_ik_locks.append((curr_bone, c))
+                        # Store DATA only
+                        lock_data = {
+                            'bone_name': curr_bone.name,
+                            'use_limit_x': c.use_limit_x,
+                            'min_x': c.min_x, 'max_x': c.max_x,
+                            'use_limit_y': c.use_limit_y,
+                            'min_y': c.min_y, 'max_y': c.max_y,
+                            'use_limit_z': c.use_limit_z,
+                            'min_z': c.min_z, 'max_z': c.max_z,
+                        }
+                        update_ik_locks.append(lock_data)
 
                 if curr_bone.parent:
                     curr_bone = curr_bone.parent
@@ -566,7 +576,7 @@ def apply_controls(context, armature):
             # 1. Mark Constraint for removal
             for c in pbone.constraints:
                 if c.type == 'IK':
-                    cleanup_ik_constraints.append((pbone, c))
+                    cleanup_ik_constraints.append((pbone.name, c.name))
 
             # 2. Mark Target Bone for removal if it exists
             # We can only check existence here, actual removal in Edit Mode
@@ -613,20 +623,17 @@ def apply_controls(context, armature):
     bpy.ops.object.mode_set(mode='POSE')
 
     # 1. Cleanup Constraints
-    for pbone, c in cleanup_ik_constraints:
-        # Re-acquire pbone reference just in case (safe in Pose mode usually, but strict)
-        real_pbone = armature.pose.bones.get(pbone.name)
+    for bone_name, constraint_name in cleanup_ik_constraints:
+        real_pbone = armature.pose.bones.get(bone_name)
         if real_pbone:
-            # Need to find the constraint instance on the new pbone object if context changed?
-            # Constraints are stored by index/pointer. Safe to search by name/type or index.
-            # Easiest: remove by object match if valid, or name.
-            # But constraint object 'c' might be invalid if Undo/Redo happened?
-            # We are in same operator execution. References should hold unless Edit mode destroyed them.
-            # Edit mode DOES destroy PoseBone objects. 'pbone' and 'c' are INVALID here.
-            # We must re-find the constraint.
+            # Remove by name if possible, or type 'IK'
+            to_remove = []
             for const in real_pbone.constraints:
-                if const.type == 'IK':
-                    real_pbone.constraints.remove(const)
+                if const.type == 'IK' and const.name == constraint_name:
+                    to_remove.append(const)
+
+            for const in to_remove:
+                real_pbone.constraints.remove(const)
 
     # 2. Apply/Setup New IK
     coll_map = {c.name: c for c in armature.data.collections}
@@ -683,57 +690,44 @@ def apply_controls(context, armature):
 
     # 3. Update IK Locks
     # We must re-acquire references because we switched modes
-    for old_pbone, old_constraint in update_ik_locks:
-        pbone = armature.pose.bones.get(old_pbone.name)
+    # Use stored data dictionary instead of object references
+    for data in update_ik_locks:
+        pbone = armature.pose.bones.get(data['bone_name'])
         if pbone:
-            # Find the limit constraint again (by type/name)
-            # Assuming 'LIMIT_ROTATION' is unique or we take first.
-            # We stored 'old_constraint'. We can read its attributes if it's still valid memory-wise?
-            # Blender Python API: DataBlocks might invalidate. Structs might not.
-            # SAFEST: Re-read constraint settings from the re-acquired bone.
-            for c in pbone.constraints:
-                if c.type == 'LIMIT_ROTATION':
-                    # Sync to IK Limits
-                    # X
-                    if c.use_limit_x:
-                        pbone.lock_ik_x = True # Strict lock if limited?
-                        # Or use limits?
-                        # User wants "limit the rotation... limit seems not working".
-                        # If Limit is Min=Max=0 (Locked), then lock_ik=True.
-                        # If Limit is Range, set use_ik_limit=True and values.
+            # Sync to IK Limits using stored data
 
-                        # Our Auto-Rig Hinge logic: use_limit_x = True, min=0, max=0 (Default).
-                        # So we check if range is zero.
-                        if abs(c.max_x - c.min_x) < 0.001:
-                             pbone.lock_ik_x = True
-                        else:
-                             pbone.use_ik_limit_x = True
-                             pbone.ik_min_x = c.min_x
-                             pbone.ik_max_x = c.max_x
-                    else:
-                        pbone.lock_ik_x = False
-                        pbone.use_ik_limit_x = False
+            # X
+            if data['use_limit_x']:
+                if abs(data['max_x'] - data['min_x']) < 0.001:
+                     pbone.lock_ik_x = True
+                else:
+                     pbone.use_ik_limit_x = True
+                     pbone.ik_min_x = data['min_x']
+                     pbone.ik_max_x = data['max_x']
+            else:
+                pbone.lock_ik_x = False
+                pbone.use_ik_limit_x = False
 
-                    # Y
-                    if c.use_limit_y:
-                        if abs(c.max_y - c.min_y) < 0.001:
-                             pbone.lock_ik_y = True
-                        else:
-                             pbone.use_ik_limit_y = True
-                             pbone.ik_min_y = c.min_y
-                             pbone.ik_max_y = c.max_y
-                    else:
-                        pbone.lock_ik_y = False
-                        pbone.use_ik_limit_y = False
+            # Y
+            if data['use_limit_y']:
+                if abs(data['max_y'] - data['min_y']) < 0.001:
+                     pbone.lock_ik_y = True
+                else:
+                     pbone.use_ik_limit_y = True
+                     pbone.ik_min_y = data['min_y']
+                     pbone.ik_max_y = data['max_y']
+            else:
+                pbone.lock_ik_y = False
+                pbone.use_ik_limit_y = False
 
-                    # Z
-                    if c.use_limit_z:
-                        if abs(c.max_z - c.min_z) < 0.001:
-                             pbone.lock_ik_z = True
-                        else:
-                             pbone.use_ik_limit_z = True
-                             pbone.ik_min_z = c.min_z
-                             pbone.ik_max_z = c.max_z
-                    else:
-                        pbone.lock_ik_z = False
-                        pbone.use_ik_limit_z = False
+            # Z
+            if data['use_limit_z']:
+                if abs(data['max_z'] - data['min_z']) < 0.001:
+                     pbone.lock_ik_z = True
+                else:
+                     pbone.use_ik_limit_z = True
+                     pbone.ik_min_z = data['min_z']
+                     pbone.ik_max_z = data['max_z']
+            else:
+                pbone.lock_ik_z = False
+                pbone.use_ik_limit_z = False
