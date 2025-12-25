@@ -65,6 +65,13 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
                 col.prop(settings, "control_shape", text="Shape")
 
                 col.separator()
+                col.prop(settings, "override_transform")
+                if settings.override_transform:
+                    col.prop(settings, "visual_scale")
+                    col.prop(settings, "visual_location")
+                    col.prop(settings, "visual_rotation")
+
+                col.separator()
                 col.prop(settings, "use_ik", text="Enable IK")
                 if settings.use_ik:
                     col.prop(settings, "ik_chain_length", text="Chain Length")
@@ -92,6 +99,22 @@ class MechRigBoneSettings(bpy.types.PropertyGroup):
         ],
         name="Shape",
         default='CIRCLE'
+    )
+
+    # Custom Widget Transform
+    override_transform: bpy.props.BoolProperty(
+        name="Customize Transform",
+        description="Manually set scale/location/rotation for the control widget",
+        default=False
+    )
+    visual_scale: bpy.props.FloatVectorProperty(
+        name="Scale", default=(1.0, 1.0, 1.0), size=3
+    )
+    visual_location: bpy.props.FloatVectorProperty(
+        name="Location", default=(0.0, 0.0, 0.0), size=3
+    )
+    visual_rotation: bpy.props.FloatVectorProperty(
+        name="Rotation", default=(0.0, 0.0, 0.0), size=3, unit='ROTATION'
     )
 
 # --- Selection Sync Logic ---

@@ -502,10 +502,27 @@ def apply_controls(context, armature):
             context.view_layer.objects.active = armature
 
             pbone.custom_shape = widget_obj
-            # Use Global Scale
-            scale_val = pbone.length * global_scale
-            pbone.custom_shape_scale_xyz = (scale_val, scale_val, scale_val)
-            pbone.custom_shape_translation = (0, pbone.length * 0.5, 0)
+
+            if settings.override_transform:
+                pbone.custom_shape_scale_xyz = settings.visual_scale
+                pbone.custom_shape_translation = settings.visual_location
+                pbone.custom_shape_rotation_euler = settings.visual_rotation
+            else:
+                # Use Global Scale (Default)
+                scale_val = pbone.length * global_scale
+                scale_vec = (scale_val, scale_val, scale_val)
+                loc_vec = (0, pbone.length * 0.5, 0)
+                rot_vec = (0, 0, 0)
+
+                pbone.custom_shape_scale_xyz = scale_vec
+                pbone.custom_shape_translation = loc_vec
+                pbone.custom_shape_rotation_euler = rot_vec
+
+                # Write back calculated defaults so UI is accurate if user switches to Custom
+                settings.visual_scale = scale_vec
+                settings.visual_location = loc_vec
+                settings.visual_rotation = rot_vec
+
         else:
             pbone.custom_shape = None
 
