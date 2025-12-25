@@ -1,4 +1,4 @@
-﻿import bpy
+import bpy
 import mathutils
 import math
 
@@ -131,8 +131,7 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
     processed_keys = set()
 
-    # Store original selection to restore later if needed, but we return new logic
-    # Important: Deselect everything before destructive operations
+    # Deselect everything before destructive operations
     bpy.ops.object.select_all(action='DESELECT')
 
     for node in all_nodes:
@@ -165,7 +164,6 @@ def process_meshes(context, rig_roots, symmetric_origin):
                 if node.is_mirrored_side == 'L' and has_mirror_mod:
                     new_obj.modifiers.remove(new_obj.modifiers[mirror_mod.name])
 
-                # Deselect all, select ONLY new_obj for operations
                 bpy.ops.object.select_all(action='DESELECT')
                 new_obj.select_set(True)
                 bpy.context.view_layer.objects.active = new_obj
@@ -178,12 +176,8 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
                     new_mesh_obj.matrix_world = new_obj.matrix_world
                     context.collection.objects.link(new_mesh_obj)
-
-                    # Remove the temp curve object
                     bpy.data.objects.remove(new_obj, do_unlink=True)
                     new_obj = new_mesh_obj
-
-                    # Ensure selection
                     bpy.ops.object.select_all(action='DESELECT')
                     new_obj.select_set(True)
                     bpy.context.view_layer.objects.active = new_obj
@@ -204,7 +198,6 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
                     new_obj.modifiers.remove(new_obj.modifiers[mirror_mod.name])
 
-                    # Deselect all, select ONLY new_obj
                     bpy.ops.object.select_all(action='DESELECT')
                     new_obj.select_set(True)
                     bpy.context.view_layer.objects.active = new_obj
@@ -217,12 +210,8 @@ def process_meshes(context, rig_roots, symmetric_origin):
                         new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
                         new_mesh_obj.matrix_world = new_obj.matrix_world
                         context.collection.objects.link(new_mesh_obj)
-
-                        # Remove the temp curve object
                         bpy.data.objects.remove(new_obj, do_unlink=True)
                         new_obj = new_mesh_obj
-
-                        # Ensure selection
                         bpy.ops.object.select_all(action='DESELECT')
                         new_obj.select_set(True)
                         bpy.context.view_layer.objects.active = new_obj
@@ -238,8 +227,6 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     mat_local_mirrored = mirror_mat @ mat_local
 
                     new_obj.matrix_world = origin_matrix @ mat_local_mirrored
-
-                    # Safe to Apply Scale because only new_obj is selected
                     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
                     bpy.ops.object.mode_set(mode='EDIT')
@@ -281,7 +268,7 @@ def create_armature(context, rig_roots, symmetric_origin):
 
         return final_head
 
-    def create_bones_recursive(nodes, parent_bone=None, connect_to_parent=False):
+    def create_bones_recursive(nodes, parent_bone=None):
         for node in nodes:
             bone = amt.edit_bones.new(node.name)
 
@@ -289,51 +276,44 @@ def create_armature(context, rig_roots, symmetric_origin):
             mat = obj.matrix_world
 
             final_head = calculate_bone_head(node)
-            final_roll_axis = mat.col[2].xyz
 
-            # Default Tail Logic (Overridden if child connection exists)
-            final_tail = mat.translation + (mat.col[1].xyz * 0.5)
+            # Align Bone to Object's Local Z axis (Y of bone = Z of object)
+            z_axis = mat.col[2].xyz.normalized()
 
+            # Readability: Use max dimension or scale, with minimum
+            length = max(obj.dimensions.length * 0.5, 0.2)
+
+            final_tail = final_head + (z_axis * length)
+
+            # Handle Mirroring for Vector/Tail
             if node.is_mirrored_side == 'R' and symmetric_origin:
-                mirrored_mat = get_mirrored_matrix(mat, symmetric_origin.matrix_world)
+                origin_mat = symmetric_origin.matrix_world
+                z_local = origin_mat.inverted().to_3x3() @ z_axis
+                z_local.x *= -1 # Mirror X
+                z_mirrored = origin_mat.to_3x3() @ z_local
 
-                # final_head already calculated above
+                final_tail = final_head + (z_mirrored * length)
 
-                y_vec_local = symmetric_origin.matrix_world.inverted().to_3x3() @ mat.col[1].xyz
-                y_vec_local.x *= -1
-                final_y_vec = symmetric_origin.matrix_world.to_3x3() @ y_vec_local
-
-                final_tail = final_head + (final_y_vec * 0.5)
-
-                z_vec_local = symmetric_origin.matrix_world.inverted().to_3x3() @ mat.col[2].xyz
-                z_vec_local.x *= -1
-                final_z_vec = symmetric_origin.matrix_world.to_3x3() @ z_vec_local
-
-                final_roll_axis = final_z_vec
-
-            # --- Connectivity Logic ---
-            should_connect_child = False
-
-            # Check if we should connect to child
-            # Only connect if there is exactly one child node in the structural tree
-            if len(node.children) == 1:
-                child = node.children[0]
-                child_head = calculate_bone_head(child)
-                final_tail = child_head
-                should_connect_child = True
-
-            # Set bone properties
             bone.head = final_head
             bone.tail = final_tail
-            bone.align_roll(final_roll_axis)
+
+            # Align Bone Z to Object X (mat.col[0]) for consistency
+            x_axis = mat.col[0].xyz.normalized()
+            if node.is_mirrored_side == 'R' and symmetric_origin:
+                origin_mat = symmetric_origin.matrix_world
+                x_local = origin_mat.inverted().to_3x3() @ x_axis
+                x_local.x *= -1
+                x_mirrored = origin_mat.to_3x3() @ x_local
+                bone.align_roll(x_mirrored)
+            else:
+                bone.align_roll(x_axis)
 
             if parent_bone:
                 bone.parent = parent_bone
-                if connect_to_parent:
-                    bone.use_connect = True
+                bone.use_connect = False # Disable connection
 
             node_to_bone[node] = bone.name
-            create_bones_recursive(node.children, bone, connect_to_parent=should_connect_child)
+            create_bones_recursive(node.children, bone)
 
     create_bones_recursive(rig_roots)
 
@@ -342,9 +322,13 @@ def create_armature(context, rig_roots, symmetric_origin):
         pbone = amt_obj.pose.bones.get(bone_name)
         if not pbone: continue
 
-        # Apply Hinge Constraints (Rotation limited to Y axis, lock X and Z)
+        # Apply Hinge Constraints (Rotation limited to Y axis of Bone = Z axis of Object)
         if node.name.startswith("Hinge_") or node.origin_obj.name.startswith("Hinge_"):
             c = pbone.constraints.new('LIMIT_ROTATION')
+            # Limit Rotation is Local to Bone.
+            # Bone Y is Object Z.
+            # We want to Allow Rotation around Object Z (Bone Y).
+            # So Allow Y. Lock X and Z.
             c.use_limit_x = True
             c.use_limit_y = False
             c.use_limit_z = True
@@ -398,9 +382,7 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
         armature_col = bpy.data.collections.new(armature_col_name)
         context.scene.collection.children.link(armature_col)
 
-    # Move Armature and Mesh to Collection
     def ensure_in_collection(obj, target_col):
-        # Unlink from other collections
         for col in list(obj.users_collection):
             if col != target_col:
                 col.objects.unlink(obj)
@@ -440,7 +422,7 @@ def get_or_create_widget(name, type='CIRCLE'):
     else:
         widgets_col = bpy.data.collections["Widgets"]
 
-    for col in obj.users_collection:
+    for col in list(obj.users_collection):
         col.objects.unlink(obj)
     widgets_col.objects.link(obj)
     obj.hide_render = True
@@ -468,29 +450,41 @@ def apply_controls(context, armature):
                     break
 
             if not existing_ik:
+                # Need to switch to Edit Mode to add bone
                 bpy.ops.object.mode_set(mode='EDIT')
-
                 amt = armature.data
-                bone = amt.edit_bones[pbone.name]
 
-                ik_target_name = f"{pbone.name}_IK"
-                if ik_target_name not in amt.edit_bones:
-                    ik_bone = amt.edit_bones.new(ik_target_name)
-                    ik_bone.head = bone.tail
-                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * 0.5
-                    ik_bone.parent = None
+                # Retrieve the edit bone again by name
+                if pbone.name in amt.edit_bones:
+                    bone = amt.edit_bones[pbone.name]
 
-                bpy.ops.object.mode_set(mode='POSE')
+                    ik_target_name = f"{pbone.name}_IK"
+                    if ik_target_name not in amt.edit_bones:
+                        ik_bone = amt.edit_bones.new(ik_target_name)
+                        ik_bone.head = bone.tail
+                        # Align IK bone similar to bone
+                        ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+                        ik_bone.parent = None
+                        ik_bone.use_deform = False
 
-                c = pbone.constraints.new('IK')
-                c.target = armature
-                c.subtarget = ik_target_name
-                c.chain_count = settings.ik_chain_length
+                    # Switch back to Pose Mode to add constraint
+                    bpy.ops.object.mode_set(mode='POSE')
 
-                ik_pbone = armature.pose.bones.get(ik_target_name)
-                if ik_pbone:
-                    ik_pbone.custom_shape = get_or_create_widget("WGT_Bone_BOX", 'BOX')
-                    ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
+                    # Must re-acquire pbone after mode switch
+                    pbone_ref = armature.pose.bones.get(pbone.name)
+                    if pbone_ref:
+                        c = pbone_ref.constraints.new('IK')
+                        c.target = armature
+                        c.subtarget = ik_target_name
+                        c.chain_count = settings.ik_chain_length
+
+                        ik_pbone = armature.pose.bones.get(ik_target_name)
+                        if ik_pbone:
+                            ik_pbone.custom_shape = get_or_create_widget("WGT_Bone_BOX", 'BOX')
+                            ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
+                else:
+                    # Should not happen, but safe fallback
+                    bpy.ops.object.mode_set(mode='POSE')
 
             else:
                 existing_ik.chain_count = settings.ik_chain_length
