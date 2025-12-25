@@ -82,6 +82,7 @@ class MechRigBoneSettings(bpy.types.PropertyGroup):
     )
     control_shape: bpy.props.EnumProperty(
         items=[
+            ('NONE', "None", "No Control Shape"),
             ('CIRCLE', "Circle", ""),
             ('BOX', "Box", ""),
             ('SPHERE', "Sphere", ""),

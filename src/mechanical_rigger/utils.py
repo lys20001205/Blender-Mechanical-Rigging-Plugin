@@ -437,29 +437,58 @@ def get_or_create_widget(name, type='CIRCLE'):
 
     return obj
 
+def ensure_bone_group(armature, name, color_set_name):
+    pose = armature.pose
+    if name not in pose.bone_groups:
+        bg = pose.bone_groups.new(name=name)
+        bg.color_set = color_set_name
+    return pose.bone_groups[name]
+
 def apply_controls(context, armature):
     bpy.ops.object.mode_set(mode='POSE')
+
+    # Setup Bone Groups
+    bg_left = ensure_bone_group(armature, "Left", 'THEME01')   # Red
+    bg_right = ensure_bone_group(armature, "Right", 'THEME04') # Blue/Purple
+    bg_center = ensure_bone_group(armature, "Center", 'THEME09') # Yellow
 
     for pbone in armature.pose.bones:
         settings = pbone.mech_rig_settings
 
-        # 1. Custom Shape
+        # Determine Group
+        if pbone.name.endswith("_L") or ".L" in pbone.name:
+            pbone.bone_group = bg_left
+        elif pbone.name.endswith("_R") or ".R" in pbone.name:
+            pbone.bone_group = bg_right
+        else:
+            pbone.bone_group = bg_center
+
+        # 1. Custom Shape Assignment
         shape_type = settings.control_shape
-        widget_name = f"WGT_Bone_{shape_type}"
-        widget_obj = get_or_create_widget(widget_name, shape_type)
 
-        # Restore Armature as Active Object for subsequent mode changes
-        context.view_layer.objects.active = armature
-        armature.select_set(True)
+        # If user explicitly set NONE, skip widget
+        # If user didn't touch it, defaults to CIRCLE.
+        # Should we assume CIRCLE is correct for everything?
+        # User said "now after apply controll all bones turn into circles."
+        # Maybe we should only apply if it's a Hinge?
+        # But 'Auto Rig' detects everything.
+        # Let's trust the setting but ensure it looks good.
 
-        pbone.custom_shape = widget_obj
+        if shape_type != 'NONE':
+            widget_name = f"WGT_Bone_{shape_type}"
+            widget_obj = get_or_create_widget(widget_name, shape_type)
 
-        # Scale and Place Control Widget
-        # Align to Bone Length.
-        # 1.0 Unit Widget -> Scaled to Bone Length.
-        # Center it: (0, Length/2, 0)
-        pbone.custom_shape_scale_xyz = (pbone.length, pbone.length, pbone.length)
-        pbone.custom_shape_translation = (0, pbone.length * 0.5, 0)
+            # Restore Armature as Active Object for subsequent mode changes
+            context.view_layer.objects.active = armature
+            armature.select_set(True)
+
+            pbone.custom_shape = widget_obj
+
+            # Scale and Place Control Widget
+            pbone.custom_shape_scale_xyz = (pbone.length, pbone.length, pbone.length)
+            pbone.custom_shape_translation = (0, pbone.length * 0.5, 0)
+        else:
+            pbone.custom_shape = None
 
         # 2. IK Setup
         if settings.use_ik:
@@ -493,22 +522,39 @@ def apply_controls(context, armature):
                     # Must re-acquire pbone after mode switch
                     pbone_ref = armature.pose.bones.get(pbone.name)
                     if pbone_ref:
+                        ik_pbone = armature.pose.bones.get(ik_target_name)
+
+                        # Apply IK Constraint
                         c = pbone_ref.constraints.new('IK')
                         c.target = armature
                         c.subtarget = ik_target_name
                         c.chain_count = settings.ik_chain_length
 
-                        ik_pbone = armature.pose.bones.get(ik_target_name)
+                        # IK-FK Switch Property
+                        prop_name = "IK_FK"
+                        if prop_name not in ik_pbone:
+                            ik_pbone[prop_name] = 1.0
+                            # Configure UI property limits
+                            ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
+
+                        # Add Driver to Influence
+                        # influence = IK_FK
+                        d = c.driver_add("influence")
+                        d.driver.type = 'AVERAGE'
+                        var = d.driver.variables.new()
+                        var.name = "var"
+                        var.type = 'SINGLE_PROP'
+                        var.targets[0].id = armature
+                        var.targets[0].data_path = f'pose.bones["{ik_target_name}"]["{prop_name}"]'
+
+                        # Setup IK Target Visuals
                         if ik_pbone:
-                            # IK Target Control
-                            # Should be centered on target (Head of IK Bone), so no translation needed if Widget is centered.
-                            # But our Widgets are centered at origin.
-                            # IK Bone Head is at the pivot point.
-                            # So we want the widget at (0,0,0) of IK Bone.
                             ik_pbone.custom_shape = get_or_create_widget("WGT_Bone_BOX", 'BOX')
-                            # Fixed reasonable scale for IK Handle
                             ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
-                            ik_pbone.custom_shape_translation = (0, 0, 0) # Ensure it's centered
+                            ik_pbone.custom_shape_translation = (0, 0, 0)
+
+                            # Assign Group
+                            ik_pbone.bone_group = pbone_ref.bone_group
                 else:
                     # Should not happen, but safe fallback
                     bpy.ops.object.mode_set(mode='POSE')
