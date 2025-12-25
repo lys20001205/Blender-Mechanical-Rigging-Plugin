@@ -47,6 +47,15 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
         box.label(text="Step 2: Controls Config")
 
         obj = context.active_object
+
+        # Mode: Editing Widget Transform
+        if obj and obj.get("mech_temp_type") == "WIDGET_EDIT":
+            box = layout.box()
+            box.label(text=f"Editing Widget: {obj.name}", icon='EDITMODE_HLT')
+            box.operator("mech_rig.apply_widget_transform", text="Apply Custom Transform", icon='CHECKMARK')
+            return
+
+        # Mode: Armature Configuration
         if obj and obj.type == 'ARMATURE':
             # Global Settings
             box.prop(scene, "mech_rig_widget_scale", text="Widget Scale")
@@ -65,7 +74,11 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
                 col.prop(settings, "control_shape", text="Shape")
 
                 col.separator()
-                col.prop(settings, "override_transform")
+                row = col.row()
+                row.prop(settings, "override_transform")
+                if active_bone.custom_shape:
+                    row.operator("mech_rig.edit_widget_transform", text="", icon='GIZMO')
+
                 if settings.override_transform:
                     col.prop(settings, "visual_scale")
                     col.prop(settings, "visual_location")
