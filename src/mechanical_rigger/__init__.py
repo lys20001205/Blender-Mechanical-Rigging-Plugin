@@ -31,10 +31,11 @@ from . import ui
 from . import utils
 
 # --- Developer Utilities ---
-class MECHANIG_OT_reload_addon(bpy.types.Operator):
+class MECH_RIG_OT_ReloadAddon(bpy.types.Operator):
     """Reloads the addon scripts without restarting Blender"""
-    bl_idname = "mechanig.reload_addon"
+    bl_idname = "mech_rig.reload_addon"
     bl_label = "Reload Addon"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         import importlib
@@ -68,9 +69,9 @@ class MECHANIG_OT_reload_addon(bpy.types.Operator):
 def register():
     operators.register()
     ui.register()
-    bpy.utils.register_class(MECHANIG_OT_reload_addon)
+    bpy.utils.register_class(MECH_RIG_OT_ReloadAddon)
 
 def unregister():
-    bpy.utils.unregister_class(MECHANIG_OT_reload_addon)
+    bpy.utils.unregister_class(MECH_RIG_OT_ReloadAddon)
     ui.unregister()
     operators.unregister()

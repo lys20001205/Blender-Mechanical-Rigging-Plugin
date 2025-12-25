@@ -14,21 +14,21 @@ class MECH_RIG_OT_AutoRig(bpy.types.Operator):
             return {'CANCELLED'}
 
         symmetric_origin = context.scene.mech_rig_symmetric_origin
-        
+
         try:
             rig_data = utils.analyze_hierarchy(selected_objects)
             processed_objects = utils.process_meshes(context, rig_data, symmetric_origin)
             armature_obj = utils.create_armature(context, rig_data, symmetric_origin)
-            utils.finalize_mesh_and_skin(context, processed_objects, armature_obj)
-            
+            utils.finalize_mesh_and_skin(context, processed_objects, armature_obj, selected_objects)
+
             # Select the new armature to show UI
             bpy.ops.object.select_all(action='DESELECT')
             context.view_layer.objects.active = armature_obj
             armature_obj.select_set(True)
-            
+
             self.report({'INFO'}, "Rigging Complete! Configure controls in panel.")
             return {'FINISHED'}
-            
+
         except Exception as e:
             self.report({'ERROR'}, f"Rigging Failed: {str(e)}")
             import traceback
@@ -47,7 +47,7 @@ class MECH_RIG_OT_AddControls(bpy.types.Operator):
         if not obj or obj.type != 'ARMATURE':
             self.report({'ERROR'}, "Please select the generated Armature.")
             return {'CANCELLED'}
-        
+
         try:
             utils.apply_controls(context, obj)
             self.report({'INFO'}, "Controls Applied!")

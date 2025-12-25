@@ -27,7 +27,12 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        
+
+        # Developer Tools (Top for accessibility)
+        box = layout.box()
+        box.label(text="Developer")
+        box.operator("mech_rig.reload_addon", text="Reload Scripts", icon='FILE_REFRESH')
+
         # Rigging Section
         box = layout.box()
         box.label(text="Step 1: Auto Rig")
@@ -37,36 +42,31 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
         # Control Section
         box = layout.box()
         box.label(text="Step 2: Controls Config")
-        
+
         obj = context.active_object
         if obj and obj.type == 'ARMATURE':
             # Bone List
             row = box.row()
             row.template_list("MECH_RIG_UL_BoneList", "", obj.pose, "bones", scene, "mech_rig_active_bone_index")
-            
+
             # Selected Bone Settings
-            if scene.mech_rig_active_bone_index < len(obj.pose.bones):
+            if 0 <= scene.mech_rig_active_bone_index < len(obj.pose.bones):
                 active_bone = obj.pose.bones[scene.mech_rig_active_bone_index]
                 settings = active_bone.mech_rig_settings
-                
+
                 col = box.column(align=True)
                 col.label(text=f"Settings for: {active_bone.name}")
                 col.prop(settings, "control_shape", text="Shape")
-                
+
                 col.separator()
                 col.prop(settings, "use_ik", text="Enable IK")
                 if settings.use_ik:
                     col.prop(settings, "ik_chain_length", text="Chain Length")
-                    
+
             box.separator()
             box.operator("mech_rig.add_controls", text="Apply Controls", icon='POSE_HLT')
         else:
             box.label(text="Select the Rig to configure.", icon='INFO')
-        
-        # Developer Tools
-        box = layout.box()
-        box.label(text="Developer")
-        box.operator("mechanig.reload_addon", text="Reload Scripts", icon='FILE_REFRESH')
 
 class MechRigBoneSettings(bpy.types.PropertyGroup):
     use_ik: bpy.props.BoolProperty(
@@ -90,9 +90,9 @@ def register():
     bpy.utils.register_class(MechRigBoneItem)
     bpy.utils.register_class(MECH_RIG_UL_BoneList)
     bpy.utils.register_class(VIEW3D_PT_MechanicalRigger)
-    
+
     bpy.types.PoseBone.mech_rig_settings = bpy.props.PointerProperty(type=MechRigBoneSettings)
-    
+
     bpy.types.Scene.mech_rig_symmetric_origin = bpy.props.PointerProperty(
         name="Symmetric Origin",
         type=bpy.types.Object,
