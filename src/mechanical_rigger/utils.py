@@ -131,8 +131,7 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
     processed_keys = set()
 
-    # Store original selection to restore later if needed, but we return new logic
-    # Important: Deselect everything before destructive operations
+    # Deselect everything before destructive operations
     bpy.ops.object.select_all(action='DESELECT')
 
     for node in all_nodes:
@@ -165,7 +164,6 @@ def process_meshes(context, rig_roots, symmetric_origin):
                 if node.is_mirrored_side == 'L' and has_mirror_mod:
                     new_obj.modifiers.remove(new_obj.modifiers[mirror_mod.name])
 
-                # Deselect all, select ONLY new_obj for operations
                 bpy.ops.object.select_all(action='DESELECT')
                 new_obj.select_set(True)
                 bpy.context.view_layer.objects.active = new_obj
@@ -178,12 +176,8 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
                     new_mesh_obj.matrix_world = new_obj.matrix_world
                     context.collection.objects.link(new_mesh_obj)
-
-                    # Remove the temp curve object
                     bpy.data.objects.remove(new_obj, do_unlink=True)
                     new_obj = new_mesh_obj
-
-                    # Ensure selection
                     bpy.ops.object.select_all(action='DESELECT')
                     new_obj.select_set(True)
                     bpy.context.view_layer.objects.active = new_obj
@@ -204,7 +198,6 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
                     new_obj.modifiers.remove(new_obj.modifiers[mirror_mod.name])
 
-                    # Deselect all, select ONLY new_obj
                     bpy.ops.object.select_all(action='DESELECT')
                     new_obj.select_set(True)
                     bpy.context.view_layer.objects.active = new_obj
@@ -217,12 +210,8 @@ def process_meshes(context, rig_roots, symmetric_origin):
                         new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
                         new_mesh_obj.matrix_world = new_obj.matrix_world
                         context.collection.objects.link(new_mesh_obj)
-
-                        # Remove the temp curve object
                         bpy.data.objects.remove(new_obj, do_unlink=True)
                         new_obj = new_mesh_obj
-
-                        # Ensure selection
                         bpy.ops.object.select_all(action='DESELECT')
                         new_obj.select_set(True)
                         bpy.context.view_layer.objects.active = new_obj
@@ -238,8 +227,6 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     mat_local_mirrored = mirror_mat @ mat_local
 
                     new_obj.matrix_world = origin_matrix @ mat_local_mirrored
-
-                    # Safe to Apply Scale because only new_obj is selected
                     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
                     bpy.ops.object.mode_set(mode='EDIT')
@@ -281,7 +268,7 @@ def create_armature(context, rig_roots, symmetric_origin):
 
         return final_head
 
-    def create_bones_recursive(nodes, parent_bone=None, connect_to_parent=False):
+    def create_bones_recursive(nodes, parent_bone=None):
         for node in nodes:
             bone = amt.edit_bones.new(node.name)
 
@@ -289,51 +276,44 @@ def create_armature(context, rig_roots, symmetric_origin):
             mat = obj.matrix_world
 
             final_head = calculate_bone_head(node)
-            final_roll_axis = mat.col[2].xyz
 
-            # Default Tail Logic (Overridden if child connection exists)
-            final_tail = mat.translation + (mat.col[1].xyz * 0.5)
+            # Align Bone to Object's Local Z axis (Y of bone = Z of object)
+            z_axis = mat.col[2].xyz.normalized()
 
+            # Readability: Use max dimension or scale, with minimum
+            length = max(obj.dimensions.length * 0.5, 0.2)
+
+            final_tail = final_head + (z_axis * length)
+
+            # Handle Mirroring for Vector/Tail
             if node.is_mirrored_side == 'R' and symmetric_origin:
-                mirrored_mat = get_mirrored_matrix(mat, symmetric_origin.matrix_world)
+                origin_mat = symmetric_origin.matrix_world
+                z_local = origin_mat.inverted().to_3x3() @ z_axis
+                z_local.x *= -1 # Mirror X
+                z_mirrored = origin_mat.to_3x3() @ z_local
 
-                # final_head already calculated above
+                final_tail = final_head + (z_mirrored * length)
 
-                y_vec_local = symmetric_origin.matrix_world.inverted().to_3x3() @ mat.col[1].xyz
-                y_vec_local.x *= -1
-                final_y_vec = symmetric_origin.matrix_world.to_3x3() @ y_vec_local
-
-                final_tail = final_head + (final_y_vec * 0.5)
-
-                z_vec_local = symmetric_origin.matrix_world.inverted().to_3x3() @ mat.col[2].xyz
-                z_vec_local.x *= -1
-                final_z_vec = symmetric_origin.matrix_world.to_3x3() @ z_vec_local
-
-                final_roll_axis = final_z_vec
-
-            # --- Connectivity Logic ---
-            should_connect_child = False
-
-            # Check if we should connect to child
-            # Only connect if there is exactly one child node in the structural tree
-            if len(node.children) == 1:
-                child = node.children[0]
-                child_head = calculate_bone_head(child)
-                final_tail = child_head
-                should_connect_child = True
-
-            # Set bone properties
             bone.head = final_head
             bone.tail = final_tail
-            bone.align_roll(final_roll_axis)
+
+            # Align Bone Z to Object X (mat.col[0]) for consistency
+            x_axis = mat.col[0].xyz.normalized()
+            if node.is_mirrored_side == 'R' and symmetric_origin:
+                origin_mat = symmetric_origin.matrix_world
+                x_local = origin_mat.inverted().to_3x3() @ x_axis
+                x_local.x *= -1
+                x_mirrored = origin_mat.to_3x3() @ x_local
+                bone.align_roll(x_mirrored)
+            else:
+                bone.align_roll(x_axis)
 
             if parent_bone:
                 bone.parent = parent_bone
-                if connect_to_parent:
-                    bone.use_connect = True
+                bone.use_connect = False # Disable connection
 
             node_to_bone[node] = bone.name
-            create_bones_recursive(node.children, bone, connect_to_parent=should_connect_child)
+            create_bones_recursive(node.children, bone)
 
     create_bones_recursive(rig_roots)
 
@@ -342,9 +322,13 @@ def create_armature(context, rig_roots, symmetric_origin):
         pbone = amt_obj.pose.bones.get(bone_name)
         if not pbone: continue
 
-        # Apply Hinge Constraints (Rotation limited to Y axis, lock X and Z)
+        # Apply Hinge Constraints (Rotation limited to Y axis of Bone = Z axis of Object)
         if node.name.startswith("Hinge_") or node.origin_obj.name.startswith("Hinge_"):
             c = pbone.constraints.new('LIMIT_ROTATION')
+            # Limit Rotation is Local to Bone.
+            # Bone Y is Object Z.
+            # We want to Allow Rotation around Object Z (Bone Y).
+            # So Allow Y. Lock X and Z.
             c.use_limit_x = True
             c.use_limit_y = False
             c.use_limit_z = True
@@ -398,9 +382,7 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
         armature_col = bpy.data.collections.new(armature_col_name)
         context.scene.collection.children.link(armature_col)
 
-    # Move Armature and Mesh to Collection
     def ensure_in_collection(obj, target_col):
-        # Unlink from other collections
         for col in list(obj.users_collection):
             if col != target_col:
                 col.objects.unlink(obj)
@@ -424,8 +406,16 @@ def get_or_create_widget(name, type='CIRCLE'):
 
     if type == 'CIRCLE':
         bpy.ops.curve.primitive_nurbs_circle_add(radius=1.0)
+        # Circles are aligned to Global XY. Bone Y is the axis.
+        # We want the circle to be in the XZ plane (Normal Y).
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.curve.select_all(action='SELECT')
+        # Rotate 90 degrees around X axis
+        bpy.ops.transform.rotate(value=math.radians(90), orient_axis='X')
+        bpy.ops.object.mode_set(mode='OBJECT')
+
     elif type == 'BOX':
-        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        bpy.ops.mesh.primitive_cube_add(size=1.0) # 1.0 size = 0.5 radius
         bpy.context.object.display_type = 'WIRE'
     elif type == 'SPHERE':
         bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5)
@@ -440,57 +430,304 @@ def get_or_create_widget(name, type='CIRCLE'):
     else:
         widgets_col = bpy.data.collections["Widgets"]
 
-    for col in obj.users_collection:
+    for col in list(obj.users_collection):
         col.objects.unlink(obj)
     widgets_col.objects.link(obj)
     obj.hide_render = True
 
     return obj
 
+def ensure_bone_collection(armature_data, name):
+    """
+    Get or create a BoneCollection (Blender 4.0+)
+    """
+    col = armature_data.collections.get(name)
+    if not col:
+        col = armature_data.collections.new(name)
+    return col
+
 def apply_controls(context, armature):
+    """
+    Batched processing to avoid mode switching inside loops.
+    """
+    # ---------------------------------------------------------
+    # PASS 1: ANALYSIS (Pose Mode)
+    # Collect data on what needs to be done.
+    # ---------------------------------------------------------
     bpy.ops.object.mode_set(mode='POSE')
 
+    coll_left = ensure_bone_collection(armature.data, "Left")
+    coll_right = ensure_bone_collection(armature.data, "Right")
+    coll_center = ensure_bone_collection(armature.data, "Center")
+
+    ik_tasks = [] # List of (bone_name, ik_target_name, chain_length, settings)
+
+    # Lists for Cleanup (Store DATA, not Objects, as Edit Mode invalidates objects)
+    cleanup_ik_bones = [] # Names of _IK bones to remove
+    cleanup_ik_constraints = [] # Tuples of (bone_name, constraint_name/type) to remove
+
+    # Lists for Config
+    update_ik_locks = [] # List of dicts with bone_name and lock settings
+
+    global_scale = context.scene.mech_rig_widget_scale
+
+    # First pass: Set up Visuals (Color, Shape) and Identify IK needs
     for pbone in armature.pose.bones:
         settings = pbone.mech_rig_settings
 
-        # 1. Custom Shape
-        shape_type = settings.control_shape
-        widget_name = f"WGT_Bone_{shape_type}"
-        widget_obj = get_or_create_widget(widget_name, shape_type)
-        pbone.custom_shape = widget_obj
+        # Determine Color & Collection
+        target_coll = coll_center
+        color_theme = 'THEME09' # Yellow
 
-        # 2. IK Setup
+        if pbone.name.endswith("_L") or ".L" in pbone.name:
+            target_coll = coll_left
+            color_theme = 'THEME01' # Red
+        elif pbone.name.endswith("_R") or ".R" in pbone.name:
+            target_coll = coll_right
+            color_theme = 'THEME04' # Blue/Purple
+
+        # Assign Collection
+        if pbone.bone.name not in [b.name for b in target_coll.bones]:
+            target_coll.assign(pbone.bone)
+
+        # Assign Color
+        pbone.color.palette = color_theme
+
+        # Custom Shape Assignment
+        shape_type = settings.control_shape
+        if shape_type != 'NONE':
+            widget_name = f"WGT_Bone_{shape_type}"
+            # Creating widget changes active object, restore armature immediately
+            widget_obj = get_or_create_widget(widget_name, shape_type)
+            context.view_layer.objects.active = armature
+
+            pbone.custom_shape = widget_obj
+
+            if settings.override_transform:
+                pbone.custom_shape_scale_xyz = settings.visual_scale
+                pbone.custom_shape_translation = settings.visual_location
+                pbone.custom_shape_rotation_euler = settings.visual_rotation
+            else:
+                # Use Global Scale (Default)
+                scale_val = pbone.length * global_scale
+                scale_vec = (scale_val, scale_val, scale_val)
+                loc_vec = (0, pbone.length * 0.5, 0)
+                rot_vec = (0, 0, 0)
+
+                pbone.custom_shape_scale_xyz = scale_vec
+                pbone.custom_shape_translation = loc_vec
+                pbone.custom_shape_rotation_euler = rot_vec
+
+                # Write back calculated defaults so UI is accurate if user switches to Custom
+                settings.visual_scale = scale_vec
+                settings.visual_location = loc_vec
+                settings.visual_rotation = rot_vec
+
+        else:
+            pbone.custom_shape = None
+
+        # IK Logic
+        ik_target_name = f"{pbone.name}_IK"
+
         if settings.use_ik:
-            existing_ik = None
+            # 1. Check if constraint needs adding
+            has_ik_constraint = False
             for c in pbone.constraints:
                 if c.type == 'IK':
-                    existing_ik = c
+                    has_ik_constraint = True
+                    c.chain_count = settings.ik_chain_length # Update length
                     break
 
-            if not existing_ik:
-                bpy.ops.object.mode_set(mode='EDIT')
+            if not has_ik_constraint:
+                ik_tasks.append({
+                    'bone_name': pbone.name,
+                    'ik_target_name': ik_target_name,
+                    'chain_length': settings.ik_chain_length,
+                    'color_theme': color_theme,
+                    'target_coll_name': target_coll.name
+                })
 
-                amt = armature.data
-                bone = amt.edit_bones[pbone.name]
+            # 2. Collect Locking Tasks (Traverse parents)
+            # We need to lock axes on parents if they have Limit Rotation constraints
+            curr_bone = pbone
+            for _ in range(settings.ik_chain_length):
+                # Check Limit Rotation
+                for c in curr_bone.constraints:
+                    if c.type == 'LIMIT_ROTATION':
+                        # Store DATA only
+                        lock_data = {
+                            'bone_name': curr_bone.name,
+                            'use_limit_x': c.use_limit_x,
+                            'min_x': c.min_x, 'max_x': c.max_x,
+                            'use_limit_y': c.use_limit_y,
+                            'min_y': c.min_y, 'max_y': c.max_y,
+                            'use_limit_z': c.use_limit_z,
+                            'min_z': c.min_z, 'max_z': c.max_z,
+                        }
+                        update_ik_locks.append(lock_data)
 
-                ik_target_name = f"{pbone.name}_IK"
-                if ik_target_name not in amt.edit_bones:
-                    ik_bone = amt.edit_bones.new(ik_target_name)
+                if curr_bone.parent:
+                    curr_bone = curr_bone.parent
+                else:
+                    break
+
+        else:
+            # Cleanup Dead IK
+            # 1. Mark Constraint for removal
+            for c in pbone.constraints:
+                if c.type == 'IK':
+                    cleanup_ik_constraints.append((pbone.name, c.name))
+
+            # 2. Mark Target Bone for removal if it exists
+            # We can only check existence here, actual removal in Edit Mode
+            # We assume naming convention implies ownership
+            if ik_target_name in armature.pose.bones:
+                cleanup_ik_bones.append(ik_target_name)
+
+    # ---------------------------------------------------------
+    # PASS 2: STRUCTURE (Edit Mode)
+    # Create/Remove Bones
+    # ---------------------------------------------------------
+
+    needs_edit_mode = bool(ik_tasks) or bool(cleanup_ik_bones)
+
+    if needs_edit_mode:
+        bpy.ops.object.mode_set(mode='EDIT')
+        amt = armature.data
+
+        # Cleanup
+        for name in cleanup_ik_bones:
+            if name in amt.edit_bones:
+                bone = amt.edit_bones[name]
+                amt.edit_bones.remove(bone)
+
+        # Creation
+        for task in ik_tasks:
+            bone_name = task['bone_name']
+            target_name = task['ik_target_name']
+
+            if bone_name in amt.edit_bones:
+                bone = amt.edit_bones[bone_name]
+                if target_name not in amt.edit_bones:
+                    ik_bone = amt.edit_bones.new(target_name)
                     ik_bone.head = bone.tail
-                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * 0.5
+                    # Align IK bone similar to bone
+                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
                     ik_bone.parent = None
+                    ik_bone.use_deform = False
 
-                bpy.ops.object.mode_set(mode='POSE')
+    # ---------------------------------------------------------
+    # PASS 3: CONSTRAINTS & DRIVERS (Pose Mode)
+    # Apply IK Constraints, setup Drivers, Remove Constraints, Apply Locks
+    # ---------------------------------------------------------
+    bpy.ops.object.mode_set(mode='POSE')
 
-                c = pbone.constraints.new('IK')
-                c.target = armature
-                c.subtarget = ik_target_name
-                c.chain_count = settings.ik_chain_length
+    # 1. Cleanup Constraints
+    for bone_name, constraint_name in cleanup_ik_constraints:
+        real_pbone = armature.pose.bones.get(bone_name)
+        if real_pbone:
+            # Remove by name if possible, or type 'IK'
+            to_remove = []
+            for const in real_pbone.constraints:
+                if const.type == 'IK' and const.name == constraint_name:
+                    to_remove.append(const)
 
-                ik_pbone = armature.pose.bones.get(ik_target_name)
-                if ik_pbone:
-                    ik_pbone.custom_shape = get_or_create_widget("WGT_Bone_BOX", 'BOX')
-                    ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
+            for const in to_remove:
+                real_pbone.constraints.remove(const)
 
+    # 2. Apply/Setup New IK
+    coll_map = {c.name: c for c in armature.data.collections}
+
+    for task in ik_tasks:
+        bone_name = task['bone_name']
+        target_name = task['ik_target_name']
+        chain_len = task['chain_length']
+        theme = task['color_theme']
+        coll_name = task['target_coll_name']
+
+        pbone = armature.pose.bones.get(bone_name)
+        ik_pbone = armature.pose.bones.get(target_name)
+
+        if pbone and ik_pbone:
+            # Apply Constraint
+            c = pbone.constraints.new('IK')
+            c.target = armature
+            c.subtarget = target_name
+            c.chain_count = chain_len
+
+            # Setup IK-FK Switch Property on Target
+            prop_name = "IK_FK"
+            if prop_name not in ik_pbone:
+                ik_pbone[prop_name] = 1.0
+                ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
+
+            # Driver
+            d = c.driver_add("influence")
+            d.driver.type = 'AVERAGE'
+            var = d.driver.variables.new()
+            var.name = "var"
+            var.type = 'SINGLE_PROP'
+            var.targets[0].id = armature
+            var.targets[0].data_path = f'pose.bones["{target_name}"]["{prop_name}"]'
+
+            # Visuals for IK Target
+            widget_obj = get_or_create_widget("WGT_Bone_BOX", 'BOX')
+            context.view_layer.objects.active = armature
+
+            ik_pbone.custom_shape = widget_obj
+            # Fixed scale for IK Handle or proportional? 1.5 is standard logic.
+            # Let's scale it by global scale too.
+            base_ik_scale = 1.5 * global_scale
+            ik_pbone.custom_shape_scale_xyz = (base_ik_scale, base_ik_scale, base_ik_scale)
+            ik_pbone.custom_shape_translation = (0, 0, 0)
+
+            ik_pbone.color.palette = theme
+
+            if coll_name in coll_map:
+                target_coll = coll_map[coll_name]
+                if ik_pbone.bone.name not in [b.name for b in target_coll.bones]:
+                    target_coll.assign(ik_pbone.bone)
+
+    # 3. Update IK Locks
+    # We must re-acquire references because we switched modes
+    # Use stored data dictionary instead of object references
+    for data in update_ik_locks:
+        pbone = armature.pose.bones.get(data['bone_name'])
+        if pbone:
+            # Sync to IK Limits using stored data
+
+            # X
+            if data['use_limit_x']:
+                if abs(data['max_x'] - data['min_x']) < 0.001:
+                    pbone.lock_ik_x = True
+                else:
+                    pbone.use_ik_limit_x = True
+                    pbone.ik_min_x = data['min_x']
+                    pbone.ik_max_x = data['max_x']
             else:
-                existing_ik.chain_count = settings.ik_chain_length
+                pbone.lock_ik_x = False
+                pbone.use_ik_limit_x = False
+
+            # Y
+            if data['use_limit_y']:
+                if abs(data['max_y'] - data['min_y']) < 0.001:
+                    pbone.lock_ik_y = True
+                else:
+                    pbone.use_ik_limit_y = True
+                    pbone.ik_min_y = data['min_y']
+                    pbone.ik_max_y = data['max_y']
+            else:
+                pbone.lock_ik_y = False
+                pbone.use_ik_limit_y = False
+
+            # Z
+            if data['use_limit_z']:
+                if abs(data['max_z'] - data['min_z']) < 0.001:
+                    pbone.lock_ik_z = True
+                else:
+                    pbone.use_ik_limit_z = True
+                    pbone.ik_min_z = data['min_z']
+                    pbone.ik_max_z = data['max_z']
+            else:
+                pbone.lock_ik_z = False
+                pbone.use_ik_limit_z = False
