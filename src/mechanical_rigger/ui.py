@@ -45,7 +45,7 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
             row.template_list("MECH_RIG_UL_BoneList", "", obj.pose, "bones", scene, "mech_rig_active_bone_index")
             
             # Selected Bone Settings
-            if scene.mech_rig_active_bone_index < len(obj.pose.bones):
+            if 0 <= scene.mech_rig_active_bone_index < len(obj.pose.bones):
                 active_bone = obj.pose.bones[scene.mech_rig_active_bone_index]
                 settings = active_bone.mech_rig_settings
                 

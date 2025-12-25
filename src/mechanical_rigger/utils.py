@@ -1,4 +1,4 @@
-﻿import bpy
+import bpy
 import mathutils
 import math
 
@@ -268,21 +268,36 @@ def create_armature(context, rig_roots, symmetric_origin):
         mat_local_mirrored = mirror_mat @ mat_local
         return origin_matrix @ mat_local_mirrored
 
-    def create_bones_recursive(nodes, parent_bone=None):
+    def calculate_bone_head(node):
+        """Helper to calculate the head position for a node."""
+        obj = node.origin_obj
+        mat = obj.matrix_world
+
+        final_head = mat.translation
+
+        if node.is_mirrored_side == 'R' and symmetric_origin:
+            mirrored_mat = get_mirrored_matrix(mat, symmetric_origin.matrix_world)
+            final_head = mirrored_mat.translation
+
+        return final_head
+
+    def create_bones_recursive(nodes, parent_bone=None, connect_to_parent=False):
         for node in nodes:
             bone = amt.edit_bones.new(node.name)
             
             obj = node.origin_obj
             mat = obj.matrix_world
             
-            final_head = mat.translation
-            final_tail = mat.translation + (mat.col[1].xyz * 0.5)
+            final_head = calculate_bone_head(node)
             final_roll_axis = mat.col[2].xyz
             
+            # Default Tail Logic (Overridden if child connection exists)
+            final_tail = mat.translation + (mat.col[1].xyz * 0.5)
+
             if node.is_mirrored_side == 'R' and symmetric_origin:
                 mirrored_mat = get_mirrored_matrix(mat, symmetric_origin.matrix_world)
                 
-                final_head = mirrored_mat.translation
+                # final_head already calculated above
                 
                 y_vec_local = symmetric_origin.matrix_world.inverted().to_3x3() @ mat.col[1].xyz
                 y_vec_local.x *= -1
@@ -296,15 +311,29 @@ def create_armature(context, rig_roots, symmetric_origin):
                 
                 final_roll_axis = final_z_vec
 
+            # --- Connectivity Logic ---
+            should_connect_child = False
+
+            # Check if we should connect to child
+            # Only connect if there is exactly one child node in the structural tree
+            if len(node.children) == 1:
+                child = node.children[0]
+                child_head = calculate_bone_head(child)
+                final_tail = child_head
+                should_connect_child = True
+
+            # Set bone properties
             bone.head = final_head
             bone.tail = final_tail
             bone.align_roll(final_roll_axis)
             
             if parent_bone:
                 bone.parent = parent_bone
+                if connect_to_parent:
+                    bone.use_connect = True
                 
             node_to_bone[node] = bone
-            create_bones_recursive(node.children, bone)
+            create_bones_recursive(node.children, bone, connect_to_parent=should_connect_child)
             
     create_bones_recursive(rig_roots)
     
@@ -313,7 +342,8 @@ def create_armature(context, rig_roots, symmetric_origin):
         pbone = amt_obj.pose.bones.get(bone.name)
         if not pbone: continue
         
-        if "Hinge_" in node.name or "Hinge_" in node.origin_obj.name:
+        # Apply Hinge Constraints (Rotation limited to Z axis)
+        if node.name.startswith("Hinge_") or node.origin_obj.name.startswith("Hinge_"):
             c = pbone.constraints.new('LIMIT_ROTATION')
             c.use_limit_x = True
             c.use_limit_y = True
@@ -323,7 +353,10 @@ def create_armature(context, rig_roots, symmetric_origin):
     bpy.ops.object.mode_set(mode='OBJECT')
     return amt_obj
 
-def finalize_mesh_and_skin(context, processed_objects, armature):
+def finalize_mesh_and_skin(context, processed_objects, armature, original_selection):
+    """
+    Combines meshes, creates 'Armature' collection, hides original objects.
+    """
     if not processed_objects:
         return
 
@@ -335,8 +368,7 @@ def finalize_mesh_and_skin(context, processed_objects, armature):
             verts = [v.index for v in obj.data.vertices]
             vg.add(verts, 1.0, 'REPLACE')
             
-    # Join - Safe because we pass 'selected_editable_objects' in context override
-    # But good practice to clean selection
+    # Join
     bpy.ops.object.select_all(action='DESELECT')
     for o in processed_objects:
         o.select_set(True)
@@ -352,6 +384,37 @@ def finalize_mesh_and_skin(context, processed_objects, armature):
     combined_mesh.parent = armature
     mod = combined_mesh.modifiers.new(name="Armature", type='ARMATURE')
     mod.object = armature
+
+    # --- Collection Management ---
+
+    # Create or Get "Armature" Collection
+    armature_col_name = "Armature"
+    if armature_col_name in bpy.data.collections:
+        armature_col = bpy.data.collections[armature_col_name]
+        # Ensure it is linked to the scene
+        if armature_col.name not in context.scene.collection.children:
+            context.scene.collection.children.link(armature_col)
+    else:
+        armature_col = bpy.data.collections.new(armature_col_name)
+        context.scene.collection.children.link(armature_col)
+
+    # Move Armature and Mesh to Collection
+    def ensure_in_collection(obj, target_col):
+        # Unlink from other collections
+        for col in obj.users_collection:
+            if col != target_col:
+                col.objects.unlink(obj)
+        if target_col not in obj.users_collection:
+            target_col.objects.link(obj)
+
+    ensure_in_collection(armature, armature_col)
+    ensure_in_collection(combined_mesh, armature_col)
+
+    # --- Hide Original Objects ---
+    if original_selection:
+        for obj in original_selection:
+            obj.hide_viewport = True
+            obj.hide_render = True
 
 # --- Step 4: Controls ---
 
