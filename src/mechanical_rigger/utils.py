@@ -439,6 +439,11 @@ def apply_controls(context, armature):
         shape_type = settings.control_shape
         widget_name = f"WGT_Bone_{shape_type}"
         widget_obj = get_or_create_widget(widget_name, shape_type)
+
+        # Restore Armature as Active Object for subsequent mode changes
+        context.view_layer.objects.active = armature
+        armature.select_set(True)
+
         pbone.custom_shape = widget_obj
 
         # 2. IK Setup

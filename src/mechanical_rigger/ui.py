@@ -1,4 +1,7 @@
-﻿import bpy
+import bpy
+from bpy.app.handlers import persistent
+
+# --- UI List & Panel ---
 
 class MechRigBoneItem(bpy.types.PropertyGroup):
     """Data class for the UI List."""
@@ -68,6 +71,8 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
         else:
             box.label(text="Select the Rig to configure.", icon='INFO')
 
+# --- Data Properties ---
+
 class MechRigBoneSettings(bpy.types.PropertyGroup):
     use_ik: bpy.props.BoolProperty(
         name="Use IK", description="Create an Inverse Kinematics setup for this bone", default=False
@@ -85,6 +90,75 @@ class MechRigBoneSettings(bpy.types.PropertyGroup):
         default='CIRCLE'
     )
 
+# --- Selection Sync Logic ---
+
+_is_updating_selection = False
+
+def update_bone_index(self, context):
+    """Called when the UI list index changes (user clicked in list). Syncs 3D View."""
+    global _is_updating_selection
+    if _is_updating_selection:
+        return
+
+    obj = context.active_object
+    if obj and obj.type == 'ARMATURE' and obj.mode == 'POSE':
+        idx = self.mech_rig_active_bone_index
+        if 0 <= idx < len(obj.pose.bones):
+            pbone = obj.pose.bones[idx]
+            bone = pbone.bone
+
+            # Prevent infinite recursion loop
+            _is_updating_selection = True
+            try:
+                # Set active bone in 3D view
+                obj.data.bones.active = bone
+                # Ensure it is selected
+                bone.select = True
+            finally:
+                _is_updating_selection = False
+
+@persistent
+def sync_selection_to_ui(scene):
+    """Called on Depsgraph update. Syncs UI list index to 3D View selection."""
+    global _is_updating_selection
+    if _is_updating_selection:
+        return
+
+    context = bpy.context
+    obj = context.active_object
+
+    if obj and obj.type == 'ARMATURE' and obj.mode == 'POSE':
+        active_bone = obj.data.bones.active
+        if active_bone:
+            # Find the pose bone corresponding to the active edit bone (data bone)
+            # Pose bones index usually matches data bones index, but safest is by name.
+            pbone = obj.pose.bones.get(active_bone.name)
+            if pbone:
+                # Find index in pose.bones
+                # Since pose.bones is a collection, we iterate or assume order.
+                # obj.pose.bones is a collection, let's just use list.index if needed or property lookup
+                # Efficient way:
+                # But template_list uses integer index.
+                # Assuming obj.pose.bones order matches internal index.
+                # We need to find the index of pbone in obj.pose.bones
+
+                # Blender API doesn't have a direct .index for PoseBone in the collection if not using [i].
+                # We can loop.
+                found_index = -1
+                for i, b in enumerate(obj.pose.bones):
+                    if b == pbone:
+                        found_index = i
+                        break
+
+                if found_index != -1 and scene.mech_rig_active_bone_index != found_index:
+                    _is_updating_selection = True
+                    try:
+                        scene.mech_rig_active_bone_index = found_index
+                    finally:
+                        _is_updating_selection = False
+
+# --- Registration ---
+
 def register():
     bpy.utils.register_class(MechRigBoneSettings)
     bpy.utils.register_class(MechRigBoneItem)
@@ -99,9 +173,21 @@ def register():
         description="Empty object acting as the mirror center",
         poll=lambda self, obj: obj.type == 'EMPTY'
     )
-    bpy.types.Scene.mech_rig_active_bone_index = bpy.props.IntProperty()
+
+    # Register property with update callback
+    bpy.types.Scene.mech_rig_active_bone_index = bpy.props.IntProperty(
+        update=update_bone_index
+    )
+
+    # Register handler
+    if sync_selection_to_ui not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(sync_selection_to_ui)
 
 def unregister():
+    # Unregister handler
+    if sync_selection_to_ui in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(sync_selection_to_ui)
+
     bpy.utils.unregister_class(VIEW3D_PT_MechanicalRigger)
     bpy.utils.unregister_class(MECH_RIG_UL_BoneList)
     bpy.utils.unregister_class(MechRigBoneItem)
