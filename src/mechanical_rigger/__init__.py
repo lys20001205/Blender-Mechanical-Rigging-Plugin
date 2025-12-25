@@ -35,6 +35,7 @@ class MECH_RIG_OT_ReloadAddon(bpy.types.Operator):
     """Reloads the addon scripts without restarting Blender"""
     bl_idname = "mech_rig.reload_addon"
     bl_label = "Reload Addon"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         import importlib

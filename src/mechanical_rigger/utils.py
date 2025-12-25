@@ -342,15 +342,16 @@ def create_armature(context, rig_roots, symmetric_origin):
         pbone = amt_obj.pose.bones.get(bone_name)
         if not pbone: continue
         
-        # Apply Hinge Constraints (Rotation limited to Z axis)
+        # Apply Hinge Constraints (Rotation limited to Y axis, lock X and Z)
         if node.name.startswith("Hinge_") or node.origin_obj.name.startswith("Hinge_"):
             c = pbone.constraints.new('LIMIT_ROTATION')
             c.use_limit_x = True
-            c.use_limit_y = True
-            c.use_limit_z = False
+            c.use_limit_y = False
+            c.use_limit_z = True
             c.owner_space = 'LOCAL'
             
     bpy.ops.object.mode_set(mode='OBJECT')
+    amt_obj.show_in_front = True
     return amt_obj
 
 def finalize_mesh_and_skin(context, processed_objects, armature, original_selection):
@@ -378,6 +379,7 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
     
     combined_mesh = processed_objects[0]
     combined_mesh.name = "Rigged_Mesh"
+    combined_mesh.display_type = 'SOLID'
     
     combined_mesh.parent = armature
     mod = combined_mesh.modifiers.new(name="Armature", type='ARMATURE')
