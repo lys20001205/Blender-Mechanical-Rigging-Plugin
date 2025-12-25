@@ -173,8 +173,23 @@ def process_meshes(context, rig_roots, symmetric_origin):
                 depsgraph = context.evaluated_depsgraph_get()
                 obj_eval = new_obj.evaluated_get(depsgraph)
                 mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
-                new_obj.data = mesh_from_eval
-                new_obj.modifiers.clear()
+
+                if new_obj.type != 'MESH':
+                    new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
+                    new_mesh_obj.matrix_world = new_obj.matrix_world
+                    context.collection.objects.link(new_mesh_obj)
+
+                    # Remove the temp curve object
+                    bpy.data.objects.remove(new_obj, do_unlink=True)
+                    new_obj = new_mesh_obj
+
+                    # Ensure selection
+                    bpy.ops.object.select_all(action='DESELECT')
+                    new_obj.select_set(True)
+                    bpy.context.view_layer.objects.active = new_obj
+                else:
+                    new_obj.data = mesh_from_eval
+                    new_obj.modifiers.clear()
                 
                 new_obj['mech_bone_name'] = node.name
                 processed_objects.append(new_obj)
@@ -197,8 +212,23 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     depsgraph = context.evaluated_depsgraph_get()
                     obj_eval = new_obj.evaluated_get(depsgraph)
                     mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
-                    new_obj.data = mesh_from_eval
-                    new_obj.modifiers.clear()
+
+                    if new_obj.type != 'MESH':
+                        new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
+                        new_mesh_obj.matrix_world = new_obj.matrix_world
+                        context.collection.objects.link(new_mesh_obj)
+
+                        # Remove the temp curve object
+                        bpy.data.objects.remove(new_obj, do_unlink=True)
+                        new_obj = new_mesh_obj
+
+                        # Ensure selection
+                        bpy.ops.object.select_all(action='DESELECT')
+                        new_obj.select_set(True)
+                        bpy.context.view_layer.objects.active = new_obj
+                    else:
+                        new_obj.data = mesh_from_eval
+                        new_obj.modifiers.clear()
                     
                     origin_matrix = symmetric_origin.matrix_world
                     mat_world = new_obj.matrix_world
