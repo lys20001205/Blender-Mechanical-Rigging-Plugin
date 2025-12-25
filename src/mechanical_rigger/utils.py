@@ -437,127 +437,169 @@ def get_or_create_widget(name, type='CIRCLE'):
 
     return obj
 
-def ensure_bone_group(armature, name, color_set_name):
-    pose = armature.pose
-    if name not in pose.bone_groups:
-        bg = pose.bone_groups.new(name=name)
-        bg.color_set = color_set_name
-    return pose.bone_groups[name]
+def ensure_bone_collection(armature_data, name):
+    """
+    Get or create a BoneCollection (Blender 4.0+)
+    """
+    col = armature_data.collections.get(name)
+    if not col:
+        col = armature_data.collections.new(name)
+    return col
 
 def apply_controls(context, armature):
+    """
+    Batched processing to avoid mode switching inside loops.
+    """
+    # ---------------------------------------------------------
+    # PASS 1: ANALYSIS (Pose Mode)
+    # Collect data on what needs to be done.
+    # ---------------------------------------------------------
     bpy.ops.object.mode_set(mode='POSE')
 
-    # Setup Bone Groups
-    bg_left = ensure_bone_group(armature, "Left", 'THEME01')   # Red
-    bg_right = ensure_bone_group(armature, "Right", 'THEME04') # Blue/Purple
-    bg_center = ensure_bone_group(armature, "Center", 'THEME09') # Yellow
+    # Bone Groups were removed in 4.0. Replaced by Bone Collections.
+    coll_left = ensure_bone_collection(armature.data, "Left")
+    coll_right = ensure_bone_collection(armature.data, "Right")
+    coll_center = ensure_bone_collection(armature.data, "Center")
 
+    ik_tasks = [] # List of (bone_name, ik_target_name, chain_length, settings)
+
+    # First pass: Set up Visuals (Color, Shape) and Identify IK needs
     for pbone in armature.pose.bones:
         settings = pbone.mech_rig_settings
 
-        # Determine Group
+        # Determine Color & Collection
+        target_coll = coll_center
+        color_theme = 'THEME09' # Yellow
+
         if pbone.name.endswith("_L") or ".L" in pbone.name:
-            pbone.bone_group = bg_left
+            target_coll = coll_left
+            color_theme = 'THEME01' # Red
         elif pbone.name.endswith("_R") or ".R" in pbone.name:
-            pbone.bone_group = bg_right
-        else:
-            pbone.bone_group = bg_center
+            target_coll = coll_right
+            color_theme = 'THEME04' # Blue/Purple
 
-        # 1. Custom Shape Assignment
+        # Assign Collection
+        if pbone.bone.name not in [b.name for b in target_coll.bones]:
+             target_coll.assign(pbone.bone)
+
+        # Assign Color
+        pbone.color.palette = color_theme
+
+        # Custom Shape Assignment
         shape_type = settings.control_shape
-
-        # If user explicitly set NONE, skip widget
-        # If user didn't touch it, defaults to CIRCLE.
-        # Should we assume CIRCLE is correct for everything?
-        # User said "now after apply controll all bones turn into circles."
-        # Maybe we should only apply if it's a Hinge?
-        # But 'Auto Rig' detects everything.
-        # Let's trust the setting but ensure it looks good.
-
         if shape_type != 'NONE':
             widget_name = f"WGT_Bone_{shape_type}"
+            # Creating widget changes active object, restore armature immediately
             widget_obj = get_or_create_widget(widget_name, shape_type)
-
-            # Restore Armature as Active Object for subsequent mode changes
             context.view_layer.objects.active = armature
-            armature.select_set(True)
 
             pbone.custom_shape = widget_obj
-
-            # Scale and Place Control Widget
             pbone.custom_shape_scale_xyz = (pbone.length, pbone.length, pbone.length)
             pbone.custom_shape_translation = (0, pbone.length * 0.5, 0)
         else:
             pbone.custom_shape = None
 
-        # 2. IK Setup
+        # Check for IK requirement
         if settings.use_ik:
-            existing_ik = None
+            has_ik_constraint = False
             for c in pbone.constraints:
                 if c.type == 'IK':
-                    existing_ik = c
+                    has_ik_constraint = True
+                    # If exists, just update chain length later?
+                    # For simplicity, we assume we configure everything if requested.
                     break
 
-            if not existing_ik:
-                # Need to switch to Edit Mode to add bone
-                bpy.ops.object.mode_set(mode='EDIT')
-                amt = armature.data
-
-                # Retrieve the edit bone again by name
-                if pbone.name in amt.edit_bones:
-                    bone = amt.edit_bones[pbone.name]
-
-                    ik_target_name = f"{pbone.name}_IK"
-                    if ik_target_name not in amt.edit_bones:
-                        ik_bone = amt.edit_bones.new(ik_target_name)
-                        ik_bone.head = bone.tail
-                        # Align IK bone similar to bone
-                        ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
-                        ik_bone.parent = None
-                        ik_bone.use_deform = False
-
-                    # Switch back to Pose Mode to add constraint
-                    bpy.ops.object.mode_set(mode='POSE')
-
-                    # Must re-acquire pbone after mode switch
-                    pbone_ref = armature.pose.bones.get(pbone.name)
-                    if pbone_ref:
-                        ik_pbone = armature.pose.bones.get(ik_target_name)
-
-                        # Apply IK Constraint
-                        c = pbone_ref.constraints.new('IK')
-                        c.target = armature
-                        c.subtarget = ik_target_name
+            if not has_ik_constraint:
+                ik_tasks.append({
+                    'bone_name': pbone.name,
+                    'ik_target_name': f"{pbone.name}_IK",
+                    'chain_length': settings.ik_chain_length,
+                    'color_theme': color_theme,
+                    'target_coll_name': target_coll.name
+                })
+            else:
+                # Update existing chain length
+                for c in pbone.constraints:
+                    if c.type == 'IK':
                         c.chain_count = settings.ik_chain_length
 
-                        # IK-FK Switch Property
-                        prop_name = "IK_FK"
-                        if prop_name not in ik_pbone:
-                            ik_pbone[prop_name] = 1.0
-                            # Configure UI property limits
-                            ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
+    # ---------------------------------------------------------
+    # PASS 2: STRUCTURE (Edit Mode)
+    # Create IK Target Bones
+    # ---------------------------------------------------------
+    if ik_tasks:
+        bpy.ops.object.mode_set(mode='EDIT')
+        amt = armature.data
 
-                        # Add Driver to Influence
-                        # influence = IK_FK
-                        d = c.driver_add("influence")
-                        d.driver.type = 'AVERAGE'
-                        var = d.driver.variables.new()
-                        var.name = "var"
-                        var.type = 'SINGLE_PROP'
-                        var.targets[0].id = armature
-                        var.targets[0].data_path = f'pose.bones["{ik_target_name}"]["{prop_name}"]'
+        for task in ik_tasks:
+            bone_name = task['bone_name']
+            target_name = task['ik_target_name']
 
-                        # Setup IK Target Visuals
-                        if ik_pbone:
-                            ik_pbone.custom_shape = get_or_create_widget("WGT_Bone_BOX", 'BOX')
-                            ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
-                            ik_pbone.custom_shape_translation = (0, 0, 0)
+            if bone_name in amt.edit_bones:
+                bone = amt.edit_bones[bone_name]
+                if target_name not in amt.edit_bones:
+                    ik_bone = amt.edit_bones.new(target_name)
+                    ik_bone.head = bone.tail
+                    # Align IK bone similar to bone
+                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+                    ik_bone.parent = None
+                    ik_bone.use_deform = False
 
-                            # Assign Group
-                            ik_pbone.bone_group = pbone_ref.bone_group
-                else:
-                    # Should not happen, but safe fallback
-                    bpy.ops.object.mode_set(mode='POSE')
+    # ---------------------------------------------------------
+    # PASS 3: CONSTRAINTS & DRIVERS (Pose Mode)
+    # Apply IK Constraints and setup Drivers
+    # ---------------------------------------------------------
+    bpy.ops.object.mode_set(mode='POSE')
 
-            else:
-                existing_ik.chain_count = settings.ik_chain_length
+    # Must re-fetch collections as objects might have been reallocated
+    coll_map = {c.name: c for c in armature.data.collections}
+
+    for task in ik_tasks:
+        bone_name = task['bone_name']
+        target_name = task['ik_target_name']
+        chain_len = task['chain_length']
+        theme = task['color_theme']
+        coll_name = task['target_coll_name']
+
+        pbone = armature.pose.bones.get(bone_name)
+        ik_pbone = armature.pose.bones.get(target_name)
+
+        if pbone and ik_pbone:
+            # 1. Apply Constraint
+            c = pbone.constraints.new('IK')
+            c.target = armature
+            c.subtarget = target_name
+            c.chain_count = chain_len
+
+            # 2. Setup IK-FK Switch Property on Target
+            prop_name = "IK_FK"
+            if prop_name not in ik_pbone:
+                ik_pbone[prop_name] = 1.0
+                ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
+
+            # 3. Driver
+            d = c.driver_add("influence")
+            d.driver.type = 'AVERAGE'
+            var = d.driver.variables.new()
+            var.name = "var"
+            var.type = 'SINGLE_PROP'
+            var.targets[0].id = armature
+            var.targets[0].data_path = f'pose.bones["{target_name}"]["{prop_name}"]'
+
+            # 4. Visuals for IK Target
+            # Shape
+            widget_obj = get_or_create_widget("WGT_Bone_BOX", 'BOX')
+            context.view_layer.objects.active = armature # Restore after widget creation
+
+            ik_pbone.custom_shape = widget_obj
+            ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
+            ik_pbone.custom_shape_translation = (0, 0, 0)
+
+            # Color
+            ik_pbone.color.palette = theme
+
+            # Collection
+            if coll_name in coll_map:
+                target_coll = coll_map[coll_name]
+                if ik_pbone.bone.name not in [b.name for b in target_coll.bones]:
+                    target_coll.assign(ik_pbone.bone)
