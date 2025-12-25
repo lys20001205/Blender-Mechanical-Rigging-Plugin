@@ -456,12 +456,20 @@ def apply_controls(context, armature):
     # ---------------------------------------------------------
     bpy.ops.object.mode_set(mode='POSE')
 
-    # Bone Groups were removed in 4.0. Replaced by Bone Collections.
     coll_left = ensure_bone_collection(armature.data, "Left")
     coll_right = ensure_bone_collection(armature.data, "Right")
     coll_center = ensure_bone_collection(armature.data, "Center")
 
     ik_tasks = [] # List of (bone_name, ik_target_name, chain_length, settings)
+
+    # Lists for Cleanup
+    cleanup_ik_bones = [] # Names of _IK bones to remove
+    cleanup_ik_constraints = [] # Tuples of (pbone, constraint) to remove
+
+    # Lists for Config
+    update_ik_locks = [] # Tuples of (pbone, limit_rot_constraint) to sync locks
+
+    global_scale = context.scene.mech_rig_widget_scale
 
     # First pass: Set up Visuals (Color, Shape) and Identify IK needs
     for pbone in armature.pose.bones:
@@ -494,43 +502,79 @@ def apply_controls(context, armature):
             context.view_layer.objects.active = armature
 
             pbone.custom_shape = widget_obj
-            pbone.custom_shape_scale_xyz = (pbone.length, pbone.length, pbone.length)
+            # Use Global Scale
+            scale_val = pbone.length * global_scale
+            pbone.custom_shape_scale_xyz = (scale_val, scale_val, scale_val)
             pbone.custom_shape_translation = (0, pbone.length * 0.5, 0)
         else:
             pbone.custom_shape = None
 
-        # Check for IK requirement
+        # IK Logic
+        ik_target_name = f"{pbone.name}_IK"
+
         if settings.use_ik:
+            # 1. Check if constraint needs adding
             has_ik_constraint = False
             for c in pbone.constraints:
                 if c.type == 'IK':
                     has_ik_constraint = True
-                    # If exists, just update chain length later?
-                    # For simplicity, we assume we configure everything if requested.
+                    c.chain_count = settings.ik_chain_length # Update length
                     break
 
             if not has_ik_constraint:
                 ik_tasks.append({
                     'bone_name': pbone.name,
-                    'ik_target_name': f"{pbone.name}_IK",
+                    'ik_target_name': ik_target_name,
                     'chain_length': settings.ik_chain_length,
                     'color_theme': color_theme,
                     'target_coll_name': target_coll.name
                 })
-            else:
-                # Update existing chain length
-                for c in pbone.constraints:
-                    if c.type == 'IK':
-                        c.chain_count = settings.ik_chain_length
+
+            # 2. Collect Locking Tasks (Traverse parents)
+            # We need to lock axes on parents if they have Limit Rotation constraints
+            curr_bone = pbone
+            for _ in range(settings.ik_chain_length):
+                # Check Limit Rotation
+                for c in curr_bone.constraints:
+                    if c.type == 'LIMIT_ROTATION':
+                        update_ik_locks.append((curr_bone, c))
+
+                if curr_bone.parent:
+                    curr_bone = curr_bone.parent
+                else:
+                    break
+
+        else:
+            # Cleanup Dead IK
+            # 1. Mark Constraint for removal
+            for c in pbone.constraints:
+                if c.type == 'IK':
+                    cleanup_ik_constraints.append((pbone, c))
+
+            # 2. Mark Target Bone for removal if it exists
+            # We can only check existence here, actual removal in Edit Mode
+            # We assume naming convention implies ownership
+            if ik_target_name in armature.pose.bones:
+                cleanup_ik_bones.append(ik_target_name)
 
     # ---------------------------------------------------------
     # PASS 2: STRUCTURE (Edit Mode)
-    # Create IK Target Bones
+    # Create/Remove Bones
     # ---------------------------------------------------------
-    if ik_tasks:
+
+    needs_edit_mode = bool(ik_tasks) or bool(cleanup_ik_bones)
+
+    if needs_edit_mode:
         bpy.ops.object.mode_set(mode='EDIT')
         amt = armature.data
 
+        # Cleanup
+        for name in cleanup_ik_bones:
+            if name in amt.edit_bones:
+                bone = amt.edit_bones[name]
+                amt.edit_bones.remove(bone)
+
+        # Creation
         for task in ik_tasks:
             bone_name = task['bone_name']
             target_name = task['ik_target_name']
@@ -547,11 +591,27 @@ def apply_controls(context, armature):
 
     # ---------------------------------------------------------
     # PASS 3: CONSTRAINTS & DRIVERS (Pose Mode)
-    # Apply IK Constraints and setup Drivers
+    # Apply IK Constraints, setup Drivers, Remove Constraints, Apply Locks
     # ---------------------------------------------------------
     bpy.ops.object.mode_set(mode='POSE')
 
-    # Must re-fetch collections as objects might have been reallocated
+    # 1. Cleanup Constraints
+    for pbone, c in cleanup_ik_constraints:
+        # Re-acquire pbone reference just in case (safe in Pose mode usually, but strict)
+        real_pbone = armature.pose.bones.get(pbone.name)
+        if real_pbone:
+            # Need to find the constraint instance on the new pbone object if context changed?
+            # Constraints are stored by index/pointer. Safe to search by name/type or index.
+            # Easiest: remove by object match if valid, or name.
+            # But constraint object 'c' might be invalid if Undo/Redo happened?
+            # We are in same operator execution. References should hold unless Edit mode destroyed them.
+            # Edit mode DOES destroy PoseBone objects. 'pbone' and 'c' are INVALID here.
+            # We must re-find the constraint.
+            for const in real_pbone.constraints:
+                if const.type == 'IK':
+                    real_pbone.constraints.remove(const)
+
+    # 2. Apply/Setup New IK
     coll_map = {c.name: c for c in armature.data.collections}
 
     for task in ik_tasks:
@@ -565,19 +625,19 @@ def apply_controls(context, armature):
         ik_pbone = armature.pose.bones.get(target_name)
 
         if pbone and ik_pbone:
-            # 1. Apply Constraint
+            # Apply Constraint
             c = pbone.constraints.new('IK')
             c.target = armature
             c.subtarget = target_name
             c.chain_count = chain_len
 
-            # 2. Setup IK-FK Switch Property on Target
+            # Setup IK-FK Switch Property on Target
             prop_name = "IK_FK"
             if prop_name not in ik_pbone:
                 ik_pbone[prop_name] = 1.0
                 ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
 
-            # 3. Driver
+            # Driver
             d = c.driver_add("influence")
             d.driver.type = 'AVERAGE'
             var = d.driver.variables.new()
@@ -586,20 +646,77 @@ def apply_controls(context, armature):
             var.targets[0].id = armature
             var.targets[0].data_path = f'pose.bones["{target_name}"]["{prop_name}"]'
 
-            # 4. Visuals for IK Target
-            # Shape
+            # Visuals for IK Target
             widget_obj = get_or_create_widget("WGT_Bone_BOX", 'BOX')
-            context.view_layer.objects.active = armature # Restore after widget creation
+            context.view_layer.objects.active = armature
 
             ik_pbone.custom_shape = widget_obj
-            ik_pbone.custom_shape_scale_xyz = (1.5, 1.5, 1.5)
+            # Fixed scale for IK Handle or proportional? 1.5 is standard logic.
+            # Let's scale it by global scale too.
+            base_ik_scale = 1.5 * global_scale
+            ik_pbone.custom_shape_scale_xyz = (base_ik_scale, base_ik_scale, base_ik_scale)
             ik_pbone.custom_shape_translation = (0, 0, 0)
 
-            # Color
             ik_pbone.color.palette = theme
 
-            # Collection
             if coll_name in coll_map:
                 target_coll = coll_map[coll_name]
                 if ik_pbone.bone.name not in [b.name for b in target_coll.bones]:
                     target_coll.assign(ik_pbone.bone)
+
+    # 3. Update IK Locks
+    # We must re-acquire references because we switched modes
+    for old_pbone, old_constraint in update_ik_locks:
+        pbone = armature.pose.bones.get(old_pbone.name)
+        if pbone:
+            # Find the limit constraint again (by type/name)
+            # Assuming 'LIMIT_ROTATION' is unique or we take first.
+            # We stored 'old_constraint'. We can read its attributes if it's still valid memory-wise?
+            # Blender Python API: DataBlocks might invalidate. Structs might not.
+            # SAFEST: Re-read constraint settings from the re-acquired bone.
+            for c in pbone.constraints:
+                if c.type == 'LIMIT_ROTATION':
+                    # Sync to IK Limits
+                    # X
+                    if c.use_limit_x:
+                        pbone.lock_ik_x = True # Strict lock if limited?
+                        # Or use limits?
+                        # User wants "limit the rotation... limit seems not working".
+                        # If Limit is Min=Max=0 (Locked), then lock_ik=True.
+                        # If Limit is Range, set use_ik_limit=True and values.
+
+                        # Our Auto-Rig Hinge logic: use_limit_x = True, min=0, max=0 (Default).
+                        # So we check if range is zero.
+                        if abs(c.max_x - c.min_x) < 0.001:
+                             pbone.lock_ik_x = True
+                        else:
+                             pbone.use_ik_limit_x = True
+                             pbone.ik_min_x = c.min_x
+                             pbone.ik_max_x = c.max_x
+                    else:
+                        pbone.lock_ik_x = False
+                        pbone.use_ik_limit_x = False
+
+                    # Y
+                    if c.use_limit_y:
+                        if abs(c.max_y - c.min_y) < 0.001:
+                             pbone.lock_ik_y = True
+                        else:
+                             pbone.use_ik_limit_y = True
+                             pbone.ik_min_y = c.min_y
+                             pbone.ik_max_y = c.max_y
+                    else:
+                        pbone.lock_ik_y = False
+                        pbone.use_ik_limit_y = False
+
+                    # Z
+                    if c.use_limit_z:
+                        if abs(c.max_z - c.min_z) < 0.001:
+                             pbone.lock_ik_z = True
+                        else:
+                             pbone.use_ik_limit_z = True
+                             pbone.ik_min_z = c.min_z
+                             pbone.ik_max_z = c.max_z
+                    else:
+                        pbone.lock_ik_z = False
+                        pbone.use_ik_limit_z = False

@@ -48,6 +48,9 @@ class VIEW3D_PT_MechanicalRigger(bpy.types.Panel):
 
         obj = context.active_object
         if obj and obj.type == 'ARMATURE':
+            # Global Settings
+            box.prop(scene, "mech_rig_widget_scale", text="Widget Scale")
+
             # Bone List
             row = box.row()
             row.template_list("MECH_RIG_UL_BoneList", "", obj.pose, "bones", scene, "mech_rig_active_bone_index")
@@ -175,6 +178,13 @@ def register():
         poll=lambda self, obj: obj.type == 'EMPTY'
     )
 
+    bpy.types.Scene.mech_rig_widget_scale = bpy.props.FloatProperty(
+        name="Widget Scale",
+        description="Global scale factor for control widgets",
+        default=0.5,
+        min=0.1
+    )
+
     # Register property with update callback
     bpy.types.Scene.mech_rig_active_bone_index = bpy.props.IntProperty(
         update=update_bone_index
@@ -195,4 +205,5 @@ def unregister():
     bpy.utils.unregister_class(MechRigBoneSettings)
     del bpy.types.PoseBone.mech_rig_settings
     del bpy.types.Scene.mech_rig_symmetric_origin
+    del bpy.types.Scene.mech_rig_widget_scale
     del bpy.types.Scene.mech_rig_active_bone_index
