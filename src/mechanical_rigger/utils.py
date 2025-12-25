@@ -332,14 +332,14 @@ def create_armature(context, rig_roots, symmetric_origin):
                 if connect_to_parent:
                     bone.use_connect = True
                 
-            node_to_bone[node] = bone
+            node_to_bone[node] = bone.name
             create_bones_recursive(node.children, bone, connect_to_parent=should_connect_child)
             
     create_bones_recursive(rig_roots)
     
     bpy.ops.object.mode_set(mode='POSE')
-    for node, bone in node_to_bone.items():
-        pbone = amt_obj.pose.bones.get(bone.name)
+    for node, bone_name in node_to_bone.items():
+        pbone = amt_obj.pose.bones.get(bone_name)
         if not pbone: continue
         
         # Apply Hinge Constraints (Rotation limited to Z axis)
