@@ -6,7 +6,8 @@ setlocal
 :: ========================================================
 :: This script launches Blender.
 :: If a test script is provided as an argument, it runs it.
-:: Otherwise, it opens Blender for manual testing.
+:: Otherwise, it loads the addon from source (test/load_addon.py)
+:: and opens Blender for manual testing.
 ::
 :: USAGE:
 :: tools/run_test.bat [path/to/test_script.py]
@@ -26,6 +27,11 @@ for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 :: Check if user provided an argument
 set "TEST_SCRIPT=%~1"
 
+:: If no argument, use the default loader script to load the addon from src
+if "%TEST_SCRIPT%"=="" (
+    set "TEST_SCRIPT=%REPO_ROOT%test\load_addon.py"
+)
+
 :: --- CHECKS ---
 if not exist "%BLENDER_EXE%" (
     echo [ERROR] Blender executable not found at:
@@ -40,22 +46,14 @@ echo.
 echo ========================================================
 echo Launching Blender...
 
-if "%TEST_SCRIPT%" neq "" (
-    if exist "%TEST_SCRIPT%" (
-        echo Running Test Script: "%TEST_SCRIPT%"
-        echo ========================================================
-        echo.
-        "%BLENDER_EXE%" --python "%TEST_SCRIPT%"
-    ) else (
-        echo [ERROR] Specified test script not found: "%TEST_SCRIPT%"
-        echo Launching Blender in interactive mode...
-        echo ========================================================
-        echo.
-        "%BLENDER_EXE%"
-    )
+if exist "%TEST_SCRIPT%" (
+    echo Running Script: "%TEST_SCRIPT%"
+    echo ========================================================
+    echo.
+    "%BLENDER_EXE%" --python "%TEST_SCRIPT%"
 ) else (
-    echo No test script argument provided.
-    echo Launching Blender in interactive mode...
+    echo [ERROR] Script not found: "%TEST_SCRIPT%"
+    echo Launching Blender in interactive mode (Addon might not be loaded)...
     echo ========================================================
     echo.
     "%BLENDER_EXE%"
