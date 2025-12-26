@@ -55,24 +55,27 @@ def validate_selection(context):
         errors.append("'_Mirrored' collection used but no 'Symmetric Origin' set in panel.")
 
     # 3. Piston Pairing Check
-    # Convention: Piston_<ID>_Cyl and Piston_<ID>_Rod
+    # Convention: Collection Name matches Piston_<ID>_Cyl or Piston_<ID>_Rod
     pistons = {}
-    piston_objects = {} # Map ID -> Type -> List of Objects (to detect split roots)
 
-    # Regex to find Piston_ID_Type
-    # Expected: Piston_Name_Cyl, Piston_Name_Rod
+    # Regex to find Piston_ID_Type in Collection Name
     piston_pattern = re.compile(r"Piston_(.+?)_(Cyl|Rod)")
 
-    for obj in selected_objects:
-        # Check Object Name OR Collection Name
-        name_to_check = obj.name
-        # Fallback to collection name if object doesn't match,
-        # BUT only if it's not a generic collection name (handled by regex)
+    # Identify involved collections first to avoid double counting objects
+    scanned_collections = set()
 
-        match = piston_pattern.match(name_to_check)
-        if not match and obj.users_collection:
-            col_name = obj.users_collection[0].name
-            match = piston_pattern.match(col_name)
+    for obj in selected_objects:
+        if not obj.users_collection: continue
+        col = obj.users_collection[0]
+        if col in scanned_collections: continue
+        scanned_collections.add(col)
+
+        # Check Collection Name
+        col_name = col.name
+        # Strip _Mirrored for check?
+        clean_col_name = col_name.replace("_Mirrored", "")
+
+        match = piston_pattern.match(clean_col_name)
 
         if match:
             pid = match.group(1)
@@ -80,10 +83,8 @@ def validate_selection(context):
 
             if pid not in pistons:
                 pistons[pid] = set()
-                piston_objects[pid] = {'Cyl': [], 'Rod': []}
 
             pistons[pid].add(ptype)
-            piston_objects[pid][ptype].append(obj)
 
     for pid, types in pistons.items():
         # Check for incomplete pairs
@@ -91,39 +92,6 @@ def validate_selection(context):
             errors.append(f"Piston '{pid}' has Cyl but missing Rod (Piston_{pid}_Rod).")
         if "Rod" in types and "Cyl" not in types:
             errors.append(f"Piston '{pid}' has Rod but missing Cyl (Piston_{pid}_Cyl).")
-
-        # Check for Split Pistons (Multiple Roots)
-        # If we have multiple objects for "Cyl", they must be in a parent-child chain.
-        # If they are separate roots (siblings), they will generate separate bones.
-        for ptype in ['Cyl', 'Rod']:
-            objs = piston_objects[pid].get(ptype, [])
-            if len(objs) > 1:
-                # Check hierarchy
-                # We need to see if they share a common ancestor WITHIN this group?
-                # Or just if they are all parented to one "Main" object?
-                # Simple check: Count how many have NO parent (or parent outside selection).
-                # Wait, validate_selection runs on selection.
-                # If I have A and B. A is parent of B.
-                # A has parent None (Root). B has parent A.
-                # Roots in this group = 1. OK.
-
-                # If I have A and B. Both parent None.
-                # Roots = 2. Problem.
-
-                roots_in_group = 0
-                selected_set = set(selected_objects)
-                for o in objs:
-                     if o.parent is None or o.parent not in selected_set:
-                         roots_in_group += 1
-                     else:
-                         # Parent is in selection.
-                         # Is parent in the SAME piston group?
-                         # If A (Cyl) is parent of B (Cyl), OK.
-                         # If A (Rod) is parent of B (Cyl)... logical mismatch but rigging-wise single chain.
-                         pass
-
-                if roots_in_group > 1:
-                     errors.append(f"Piston '{pid}' {ptype} has {roots_in_group} separate root objects. Parent them together or use a Collection to merge them.")
 
     return errors
 
@@ -193,16 +161,6 @@ def analyze_hierarchy(selected_objects):
             # So user must put them in separate collections?
             # Or we should update logic to always create bone if object name starts with Piston_?
 
-            if obj.name.startswith("Piston_"):
-                # Normalize Piston Names to Piston_<ID>_<Type>
-                # This allows objects like "Piston_H1_Cyl_Screw" to map to the bone "Piston_H1_Cyl"
-                # facilitating merging of multipart pistons if parented correctly.
-                piston_match = re.match(r"Piston_(.+?)_(Cyl|Rod)", obj.name)
-                if piston_match:
-                    base_name = f"Piston_{piston_match.group(1)}_{piston_match.group(2)}"
-                else:
-                    base_name = obj.name
-
             if is_mirrored_col:
                 name_l = f"{base_name}_L"
                 node_l = BoneNode(name_l, obj, is_mirrored_side='L')
@@ -237,6 +195,14 @@ def analyze_hierarchy(selected_objects):
         else:
             node_l = parent_node_l
             node_r = parent_node_r
+
+            # IMPORTANT: If we are staying in the same bone (node), checks if this object
+            # is a better representative for the pivot (e.g., "Hinge_...").
+            # If so, update the origin_obj.
+            if node_l and obj.name.startswith("Hinge_"):
+                node_l.origin_obj = obj
+                if node_r:
+                    node_r.origin_obj = obj
 
         for child in obj.children:
             if child in selected_set:
