@@ -873,7 +873,8 @@ def apply_controls(context, armature):
                 # Use Global Scale (Default)
                 scale_val = pbone.length * global_scale
                 scale_vec = (scale_val, scale_val, scale_val)
-                loc_vec = (0, pbone.length * 0.5, 0)
+                # User Request: Place control at the head (0,0,0) not center
+                loc_vec = (0, 0, 0)
                 rot_vec = (0, 0, 0)
 
                 pbone.custom_shape_scale_xyz = scale_vec
