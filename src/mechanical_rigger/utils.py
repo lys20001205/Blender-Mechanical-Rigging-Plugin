@@ -1095,10 +1095,13 @@ def apply_controls(context, armature):
             c.target = armature
             c.subtarget = target_name
 
-            if pole_pbone:
-                c.pole_target = armature
-                c.pole_subtarget = pole_name
-                c.pole_angle = 0
+            # Mechanical Rigging: Do not force Pole Target.
+            # Poles often conflict with single-axis hinges (LIMIT_ROTATION), causing snapping.
+            # We generate the Pole Bone for manual use, but do not link it by default.
+            # if pole_pbone:
+            #    c.pole_target = armature
+            #    c.pole_subtarget = pole_name
+            #    c.pole_angle = 0
 
             c.chain_count = chain_len
 
