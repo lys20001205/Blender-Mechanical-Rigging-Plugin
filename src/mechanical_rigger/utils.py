@@ -888,9 +888,11 @@ def apply_controls(context, armature):
                     break
 
             if not has_ik_constraint:
+                # NEW STRATEGY: Split IK Control (Head) and Solver Target (Tail)
                 ik_tasks.append({
                     'bone_name': pbone.name,
-                    'ik_target_name': ik_target_name,
+                    'ik_target_name': ik_target_name, # The Control Bone
+                    'solver_target_name': f"{pbone.name}_IK_Target", # The Hidden Solver Bone
                     'pole_target_name': pole_target_name,
                     'chain_length': settings.ik_chain_length,
                     'color_theme': color_theme,
@@ -948,6 +950,11 @@ def apply_controls(context, armature):
             # 2. Mark Target Bones for removal if they exist
             if ik_target_name in armature.pose.bones:
                 cleanup_ik_bones.append(ik_target_name)
+
+            solver_target_name = f"{pbone.name}_IK_Target"
+            if solver_target_name in armature.pose.bones:
+                cleanup_ik_bones.append(solver_target_name)
+
             if pole_target_name in armature.pose.bones:
                 cleanup_ik_bones.append(pole_target_name)
 
@@ -972,22 +979,32 @@ def apply_controls(context, armature):
         for task in ik_tasks:
             bone_name = task['bone_name']
             target_name = task['ik_target_name']
+            solver_name = task['solver_target_name']
             pole_name = task['pole_target_name']
 
             if bone_name in amt.edit_bones:
                 bone = amt.edit_bones[bone_name]
 
-                # IK Target
+                # 1. Create Control Bone (at Head)
                 if target_name not in amt.edit_bones:
-                    ik_bone = amt.edit_bones.new(target_name)
-                    # REVERT: Place at Tail
-                    ik_bone.head = bone.tail
-                    # Align IK bone similar to bone
-                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
-                    ik_bone.parent = None
-                    ik_bone.use_deform = False
-                    # CRITICAL: Align roll to match FK bone so visuals are consistent
-                    ik_bone.roll = bone.roll
+                    ctrl_bone = amt.edit_bones.new(target_name)
+                    ctrl_bone.head = bone.head
+                    ctrl_bone.tail = bone.head + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+                    ctrl_bone.parent = None
+                    ctrl_bone.use_deform = False
+                    ctrl_bone.roll = bone.roll
+                else:
+                    ctrl_bone = amt.edit_bones[target_name]
+
+                # 2. Create Solver Target Bone (at Tail, parented to Control)
+                if solver_name not in amt.edit_bones:
+                    solver_bone = amt.edit_bones.new(solver_name)
+                    solver_bone.head = bone.tail
+                    # Align to global axes or bone? Standard IK target usually aligns to bone.
+                    solver_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.2)
+                    solver_bone.parent = ctrl_bone # Parenting allows orbiting behavior
+                    solver_bone.use_deform = False
+                    solver_bone.roll = bone.roll # Align roll
 
                 # Pole Target
                 # Calculate Pole Position (Updated for Standard IK)
@@ -1090,62 +1107,61 @@ def apply_controls(context, armature):
         owner_pbone = pbone
 
         if owner_pbone and ik_pbone:
-            # Apply Constraint
-            c = owner_pbone.constraints.new('IK')
-            c.target = armature
-            c.subtarget = target_name
+            # Get Solver Bone
+            solver_name = task['solver_target_name']
+            solver_pbone = armature.pose.bones.get(solver_name)
 
-            # Mechanical Rigging: Do not force Pole Target.
-            # Poles often conflict with single-axis hinges (LIMIT_ROTATION), causing snapping.
-            # We generate the Pole Bone for manual use, but do not link it by default.
-            # if pole_pbone:
-            #    c.pole_target = armature
-            #    c.pole_subtarget = pole_name
-            #    c.pole_angle = 0
+            if solver_pbone:
+                # Hide Solver Bone
+                solver_pbone.bone.hide = True
 
-            c.chain_count = chain_len
+                # Apply Constraint (Targeting Solver Bone)
+                c = owner_pbone.constraints.new('IK')
+                c.target = armature
+                c.subtarget = solver_name # Reach for the hidden tail bone
 
-            # Setup IK-FK Switch Property on Target
-            prop_name = "IK_FK"
-            if prop_name not in ik_pbone:
-                ik_pbone[prop_name] = 1.0
-                ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
+                # Enable Rotation tracking
+                c.use_rotation = True
 
-            # Driver
-            d = c.driver_add("influence")
-            d.driver.type = 'AVERAGE'
-            var = d.driver.variables.new()
-            var.name = "var"
-            var.type = 'SINGLE_PROP'
-            var.targets[0].id = armature
-            var.targets[0].data_path = f'pose.bones["{target_name}"]["{prop_name}"]'
+                # Mechanical Rigging: Do not force Pole Target by default.
+                # if pole_pbone:
+                #    c.pole_target = armature
+                #    c.pole_subtarget = pole_name
+                #    c.pole_angle = 0
 
-            # Visuals for IK Target
-            widget_obj = get_or_create_widget("WGT_Bone_BOX", 'BOX')
-            context.view_layer.objects.active = armature
+                c.chain_count = chain_len
 
-            ik_pbone.custom_shape = widget_obj
-            base_ik_scale = 1.5 * global_scale
-            ik_pbone.custom_shape_scale_xyz = (base_ik_scale, base_ik_scale, base_ik_scale)
+                # Setup IK-FK Switch Property on Control Target
+                prop_name = "IK_FK"
+                if prop_name not in ik_pbone:
+                    ik_pbone[prop_name] = 1.0
+                    ik_pbone.id_properties_ui(prop_name).update(min=0.0, max=1.0)
 
-            # VISUAL OFFSET: User wants control at Bone Head, but logic requires it at Tail.
-            # We shift the visual shape by -Length along Y (Bone Axis).
-            # Note: custom_shape_translation is in Bone Local Space.
-            # IK Bone is aligned with FK Bone. Y points Tail-wards.
-            # So -Y points to Head.
-            # We must use the original bone's length.
+                # Driver (Influence)
+                d = c.driver_add("influence")
+                d.driver.type = 'AVERAGE'
+                var = d.driver.variables.new()
+                var.name = "var"
+                var.type = 'SINGLE_PROP'
+                var.targets[0].id = armature
+                var.targets[0].data_path = f'pose.bones["{target_name}"]["{prop_name}"]'
 
-            offset_y = -pbone.length
-            # Note: Translation is not affected by custom_shape_scale if override is not set?
-            # Actually, standard behavior: translation is in local units.
+                # Visuals for IK Control (No Offset Needed)
+                widget_obj = get_or_create_widget("WGT_Bone_BOX", 'BOX')
+                context.view_layer.objects.active = armature
 
-            ik_pbone.custom_shape_translation = (0, offset_y, 0)
-            ik_pbone.color.palette = theme
+                ik_pbone.custom_shape = widget_obj
+                base_ik_scale = 1.5 * global_scale
+                ik_pbone.custom_shape_scale_xyz = (base_ik_scale, base_ik_scale, base_ik_scale)
 
-            if coll_name in coll_map:
-                target_coll = coll_map[coll_name]
-                if ik_pbone.bone.name not in [b.name for b in target_coll.bones]:
-                    target_coll.assign(ik_pbone.bone)
+                # Remove visual offset (Pivot is now at Head)
+                ik_pbone.custom_shape_translation = (0, 0, 0)
+                ik_pbone.color.palette = theme
+
+                if coll_name in coll_map:
+                    target_coll = coll_map[coll_name]
+                    if ik_pbone.bone.name not in [b.name for b in target_coll.bones]:
+                        target_coll.assign(ik_pbone.bone)
 
             # Visuals for Pole Target
             if pole_pbone:
