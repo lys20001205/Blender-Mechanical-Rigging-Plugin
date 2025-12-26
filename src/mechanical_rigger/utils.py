@@ -194,21 +194,14 @@ def analyze_hierarchy(selected_objects):
             # Or we should update logic to always create bone if object name starts with Piston_?
 
             if obj.name.startswith("Piston_"):
-                # Override the base_name to use the Object name instead of Collection name.
-                # This ensures Piston bones preserve their specific ID (Cyl/Rod) regardless of collection.
-                # Handle potential mirroring suffixes in the object name if present
-                # But simpler is to just use the object name as the base.
-                # Logic:
-                # If collection is mirrored, we append _L / _R later.
-                # If the object name already has suffixes, we might double them?
-                # Let's assume user names object "Piston_Elbow_Cyl".
-                # If in mirrored collection, we want "Piston_Elbow_Cyl_L".
-                # So base_name = "Piston_Elbow_Cyl".
-                base_name = obj.name
-
-                # Strip existing .L/.R or _L/_R if they match the side being generated?
-                # Actually, standard flow: Object "Piston_Elbow_Cyl" in "Arm_Mirrored" -> "Piston_Elbow_Cyl_L" and "..._R"
-                pass
+                # Normalize Piston Names to Piston_<ID>_<Type>
+                # This allows objects like "Piston_H1_Cyl_Screw" to map to the bone "Piston_H1_Cyl"
+                # facilitating merging of multipart pistons if parented correctly.
+                piston_match = re.match(r"Piston_(.+?)_(Cyl|Rod)", obj.name)
+                if piston_match:
+                    base_name = f"Piston_{piston_match.group(1)}_{piston_match.group(2)}"
+                else:
+                    base_name = obj.name
 
             if is_mirrored_col:
                 name_l = f"{base_name}_L"
