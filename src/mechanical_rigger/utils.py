@@ -913,6 +913,7 @@ def apply_controls(context, armature):
             if not has_ik_constraint:
                 ik_tasks.append({
                     'bone_name': pbone.name,
+                    'parent_name': pbone.parent.name if pbone.parent else None,
                     'ik_target_name': ik_target_name,
                     'chain_length': settings.ik_chain_length,
                     'color_theme': color_theme,
@@ -976,15 +977,33 @@ def apply_controls(context, armature):
         # Creation
         for task in ik_tasks:
             bone_name = task['bone_name']
+            parent_name = task['parent_name']
             target_name = task['ik_target_name']
 
             if bone_name in amt.edit_bones:
                 bone = amt.edit_bones[bone_name]
                 if target_name not in amt.edit_bones:
                     ik_bone = amt.edit_bones.new(target_name)
-                    ik_bone.head = bone.tail
-                    # Align IK bone similar to bone
-                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+
+                    if parent_name:
+                        # NEW LOGIC: Target at Head
+                        ik_bone.head = bone.head
+                        # Align nicely along the bone vector
+                        ik_bone.tail = bone.head + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+                        # Align Roll to match bone
+                        ik_bone.roll = bone.roll
+
+                        # Parent the Control Bone to the IK Target so it follows
+                        # The Control Bone (pbone) is the one the user selected.
+                        # Since we are putting the IK constraint on the PARENT, the Control Bone
+                        # becomes a child of the IK Target (Effector).
+                        bone.parent = ik_bone
+                    else:
+                        # FALLBACK (Root bone case, rare for IK)
+                        ik_bone.head = bone.tail
+                        # Align IK bone similar to bone
+                        ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+
                     ik_bone.parent = None
                     ik_bone.use_deform = False
 
@@ -1012,6 +1031,7 @@ def apply_controls(context, armature):
 
     for task in ik_tasks:
         bone_name = task['bone_name']
+        parent_name = task['parent_name']
         target_name = task['ik_target_name']
         chain_len = task['chain_length']
         theme = task['color_theme']
@@ -1021,8 +1041,16 @@ def apply_controls(context, armature):
         ik_pbone = armature.pose.bones.get(target_name)
 
         if pbone and ik_pbone:
+            constraint_owner = pbone
+
+            # If we used the "Target at Head" strategy, the constraint goes on the Parent
+            if parent_name:
+                parent_pbone = armature.pose.bones.get(parent_name)
+                if parent_pbone:
+                    constraint_owner = parent_pbone
+
             # Apply Constraint
-            c = pbone.constraints.new('IK')
+            c = constraint_owner.constraints.new('IK')
             c.target = armature
             c.subtarget = target_name
             c.chain_count = chain_len
