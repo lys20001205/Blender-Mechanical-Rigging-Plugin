@@ -221,12 +221,99 @@ class MECH_RIG_OT_ApplyWidgetTransform(bpy.types.Operator):
         self.report({'INFO'}, "Widget Transform Applied.")
         return {'FINISHED'}
 
+class MECH_RIG_OT_AssignLayer(bpy.types.Operator):
+    """Assign selected bones to a specific Bone Collection."""
+    bl_idname = "mech_rig.assign_layer"
+    bl_label = "Assign to Layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    layer_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'ARMATURE' or obj.mode != 'POSE':
+            self.report({'ERROR'}, "Select an Armature in Pose Mode.")
+            return {'CANCELLED'}
+
+        arm = obj.data
+        if not hasattr(arm, "collections"):
+            self.report({'ERROR'}, "Bone Collections not supported.")
+            return {'CANCELLED'}
+
+        target_col = arm.collections.get(self.layer_name)
+        if not target_col:
+            target_col = arm.collections.new(self.layer_name)
+
+        selected_bones = context.selected_pose_bones
+        if not selected_bones:
+            self.report({'WARNING'}, "No bones selected.")
+            return {'CANCELLED'}
+
+        for pbone in selected_bones:
+            if pbone.bone.name not in [b.name for b in target_col.bones]:
+                target_col.assign(pbone.bone)
+
+        self.report({'INFO'}, f"Assigned {len(selected_bones)} bones to '{self.layer_name}'.")
+        return {'FINISHED'}
+
+class MECH_RIG_OT_BatchRename(bpy.types.Operator):
+    """Batch rename selected objects or bones."""
+    bl_idname = "mech_rig.batch_rename"
+    bl_label = "Batch Rename"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    operation: bpy.props.EnumProperty(
+        items=[
+            ('SUFFIX', "Add Suffix", ""),
+            ('PREFIX', "Add Prefix", ""),
+            ('REPLACE', "Find & Replace", "")
+        ],
+        default='SUFFIX'
+    )
+    text: bpy.props.StringProperty(name="Text")
+    replace_text: bpy.props.StringProperty(name="Replace With", default="")
+
+    def execute(self, context):
+        targets = []
+        if context.mode == 'POSE':
+            targets = context.selected_pose_bones
+        else:
+            targets = context.selected_objects
+
+        if not targets:
+            self.report({'WARNING'}, "No selection.")
+            return {'CANCELLED'}
+
+        count = 0
+        for item in targets:
+            name = item.name
+            new_name = name
+
+            if self.operation == 'SUFFIX':
+                if not name.endswith(self.text):
+                    new_name = name + self.text
+            elif self.operation == 'PREFIX':
+                if not name.startswith(self.text):
+                    new_name = self.text + name
+            elif self.operation == 'REPLACE':
+                if self.text in name:
+                    new_name = name.replace(self.text, self.replace_text)
+
+            if new_name != name:
+                item.name = new_name
+                count += 1
+
+        self.report({'INFO'}, f"Renamed {count} items.")
+        return {'FINISHED'}
+
 def register():
     bpy.utils.register_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.register_class(MECH_RIG_OT_AutoRig)
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.register_class(MECH_RIG_OT_ApplyWidgetTransform)
+    bpy.utils.register_class(MECH_RIG_OT_AssignLayer)
+    bpy.utils.register_class(MECH_RIG_OT_BatchRename)
 
 def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_ValidateHierarchy)
@@ -234,3 +321,5 @@ def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.unregister_class(MECH_RIG_OT_ApplyWidgetTransform)
+    bpy.utils.unregister_class(MECH_RIG_OT_AssignLayer)
+    bpy.utils.unregister_class(MECH_RIG_OT_BatchRename)

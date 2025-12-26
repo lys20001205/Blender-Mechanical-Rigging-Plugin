@@ -47,6 +47,7 @@ class VIEW3D_PT_mech_rig_generate(bpy.types.Panel):
         scene = context.scene
 
         layout.prop(scene, "mech_rig_symmetric_origin", text="Symmetric Origin")
+        layout.prop(scene, "mech_rig_bone_size_scale", text="Bone Size Scale")
 
         row = layout.row(align=True)
         row.operator("mech_rig.validate_hierarchy", text="Validate Hierarchy", icon='CHECKMARK')
@@ -79,6 +80,14 @@ class VIEW3D_PT_mech_rig_layers(bpy.types.Panel):
                 col_flow.prop(bcol, "is_visible", text=bcol.name, toggle=True)
         else:
             layout.label(text="Bone Collections not supported (Old Blender?)", icon='ERROR')
+
+        layout.separator()
+        layout.label(text="Assign Selected to:")
+        row = layout.row(align=True)
+        row.operator("mech_rig.assign_layer", text="Left").layer_name = "Left"
+        row.operator("mech_rig.assign_layer", text="Right").layer_name = "Right"
+        row.operator("mech_rig.assign_layer", text="Center").layer_name = "Center"
+        row.operator("mech_rig.assign_layer", text="Mech").layer_name = "Mechanics"
 
 class VIEW3D_PT_mech_rig_settings(bpy.types.Panel):
     """Control Settings for Selected Bone"""
@@ -162,9 +171,44 @@ class VIEW3D_PT_mech_rig_widget_edit(bpy.types.Panel):
         layout.label(text=f"Editing: {obj.name}", icon='EDITMODE_HLT')
         layout.operator("mech_rig.apply_widget_transform", text="Apply Custom Transform", icon='CHECKMARK')
 
+class VIEW3D_PT_mech_rig_naming(bpy.types.Panel):
+    """Naming Tools"""
+    bl_label = "Naming Tools"
+    bl_idname = "VIEW3D_PT_mech_rig_naming"
+    bl_parent_id = "VIEW3D_PT_mech_rig_main"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.label(text="Add Suffix:")
+        row = layout.row(align=True)
+        row.operator("mech_rig.batch_rename", text=".L").text = ".L"
+        row.operator("mech_rig.batch_rename", text=".R").text = ".R"
+
+        row = layout.row(align=True)
+        row.operator("mech_rig.batch_rename", text="_Cyl").text = "_Cyl"
+        row.operator("mech_rig.batch_rename", text="_Rod").text = "_Rod"
+
+        layout.separator()
+        layout.label(text="Custom Rename:")
+        # We need props to hold values for custom rename, but operator props are hard to set in UI without a wrapper.
+        # Simple implementation: Just operators with presets for now, or use Popup.
+        # Let's add a generic 'Add Suffix' button that calls the operator with a popup?
+        # Actually, operator redo panel handles arguments.
+
+        op = layout.operator("mech_rig.batch_rename", text="Custom Suffix...")
+        op.operation = 'SUFFIX'
+
+        op = layout.operator("mech_rig.batch_rename", text="Find & Replace...")
+        op.operation = 'REPLACE'
+
+
 class VIEW3D_PT_mech_rig_tools(bpy.types.Panel):
     """Developer Tools"""
-    bl_label = "Tools"
+    bl_label = "Dev Tools"
     bl_idname = "VIEW3D_PT_mech_rig_tools"
     bl_parent_id = "VIEW3D_PT_mech_rig_main"
     bl_space_type = 'VIEW_3D'
@@ -290,6 +334,7 @@ classes = (
     VIEW3D_PT_mech_rig_layers,
     VIEW3D_PT_mech_rig_settings,
     VIEW3D_PT_mech_rig_widget_edit,
+    VIEW3D_PT_mech_rig_naming,
     VIEW3D_PT_mech_rig_tools,
 )
 
@@ -304,6 +349,13 @@ def register():
         type=bpy.types.Object,
         description="Empty object acting as the mirror center",
         poll=lambda self, obj: obj.type == 'EMPTY'
+    )
+
+    bpy.types.Scene.mech_rig_bone_size_scale = bpy.props.FloatProperty(
+        name="Bone Size Scale",
+        description="Global scale factor for generated bones",
+        default=1.0,
+        min=0.1
     )
 
     bpy.types.Scene.mech_rig_widget_scale = bpy.props.FloatProperty(
