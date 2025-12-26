@@ -878,26 +878,14 @@ def apply_controls(context, armature):
         if settings.use_ik:
             # 1. Check if constraint needs adding
             has_ik_constraint = False
-            constraint_owner = pbone.parent if pbone.parent else pbone
+            # REVERT: Constraint owner is pbone (Self), not Parent
+            constraint_owner = pbone
 
-            # If parent exists, check parent constraints. If not, check self (fallback)
-            # Actually, we should check where we INTEND to put it.
-            # We intend to put it on pbone.parent
-            if pbone.parent:
-                for c in pbone.parent.constraints:
-                    if c.type == 'IK' and c.target == armature and c.subtarget == ik_target_name:
-                        has_ik_constraint = True
-                        c.chain_count = settings.ik_chain_length
-                        break
-            else:
-                # If no parent, we put it on pbone? Or disable?
-                # Without parent, chain_length 2 doesn't make sense.
-                # But let's support 1.
-                for c in pbone.constraints:
-                     if c.type == 'IK' and c.target == armature and c.subtarget == ik_target_name:
-                        has_ik_constraint = True
-                        c.chain_count = settings.ik_chain_length
-                        break
+            for c in pbone.constraints:
+                 if c.type == 'IK' and c.target == armature and c.subtarget == ik_target_name:
+                    has_ik_constraint = True
+                    c.chain_count = settings.ik_chain_length
+                    break
 
             if not has_ik_constraint:
                 ik_tasks.append({
@@ -911,9 +899,21 @@ def apply_controls(context, armature):
 
             # 2. Collect Locking Tasks (Traverse parents)
             # We need to lock axes on parents if they have Limit Rotation constraints
-            curr_bone = pbone.parent if pbone.parent else pbone
+            # If constraint is on pbone (Chain 0), parent is Chain 1.
+            curr_bone = pbone.parent if pbone.parent else None # Chain count starts from pbone if it has IK?
+            # Actually, Blender IK Chain Count includes the owner.
+            # 1 = Owner only.
+            # 2 = Owner + Parent.
+
+            # Locking applies to the CHAIN.
+            # We start checking from Owner? Or Parent?
+            # Usually we don't lock the Owner if it's the tip (unless it has limits).
+
+            curr_bone = pbone # Start at owner
 
             for _ in range(settings.ik_chain_length):
+                if not curr_bone: break
+
                 # Check Limit Rotation
                 for c in curr_bone.constraints:
                     if c.type == 'LIMIT_ROTATION':
@@ -936,10 +936,9 @@ def apply_controls(context, armature):
 
         else:
             # Cleanup Dead IK
-            # 1. Mark Constraint for removal (Check Parent and Self)
+            # 1. Mark Constraint for removal (Check Self)
             target_bones = [pbone]
-            if pbone.parent:
-                target_bones.append(pbone.parent)
+            # No need to check parent for this specific implementation logic anymore
 
             for b in target_bones:
                 for c in b.constraints:
@@ -981,88 +980,65 @@ def apply_controls(context, armature):
                 # IK Target
                 if target_name not in amt.edit_bones:
                     ik_bone = amt.edit_bones.new(target_name)
-                    # NEW: Place at Head
-                    ik_bone.head = bone.head
+                    # REVERT: Place at Tail
+                    ik_bone.head = bone.tail
                     # Align IK bone similar to bone
-                    ik_bone.tail = bone.head + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
                     ik_bone.parent = None
                     ik_bone.use_deform = False
 
                 # Pole Target
-                # Calculate Pole Position
-                # Ideal pole position is in the direction of the bend.
-                # If chain length >= 2, we have: Bone (Child) -> Parent (Middle) -> GrandParent (Top)
-                # The joint is at Parent.Head (Bone.Head is Parent.Tail? No. Bone.Head is connected to Parent.Tail)
-                # So Joint is Bone.Head.
-                # Top is Parent.Head.
-                # End is Bone.Tail.
-                # Wait, IK Chain of 2 usually means:
-                # Effector (Target) at Bone.Tail (normally).
-                # Controlled bones: Bone, Parent.
-
-                # BUT we moved Target to Bone.Head.
-                # Constraint is on Parent.
-                # So Controlled bones are: Parent, GrandParent.
-                # Joint is Parent.Head (Start of Parent) -> No, Joint is between Parent and Grandparent.
-                # Chain: GrandParent -> Parent.
-                # Target is at Parent.Tail (which is Bone.Head).
-                # So Joint is GrandParent.Tail == Parent.Head.
+                # Calculate Pole Position (Updated for Standard IK)
+                # Chain includes Bone and Parent.
+                # Joint is at Bone.Head (which is Parent.Tail).
 
                 # We need a vector that points "out" from the joint.
-                # Triangle: GrandParent.Head, Parent.Head (Joint), Parent.Tail (End).
-                # But Parent.Head and GrandParent.Tail are same location.
+                # Triangle: Parent.Head (Top), Bone.Head (Joint), Bone.Tail (End/Target).
 
-                # Pole Vector calculation:
-                # Vector1 = Joint - Top (Parent.Head - GrandParent.Head)
-                # Vector2 = End - Joint (Parent.Tail - Parent.Head)
-                # Normal = (Vector1 + Vector2).normalized() ?
-                # Or Cross product?
+                pole_pos = None
 
-                # We need the traversal.
-                if task['chain_length'] >= 2 and bone.parent and bone.parent.parent:
-                    # Case: Constraint on Parent. Chain covers Parent and GrandParent.
-                    # Top: GrandParent.Head
-                    # Joint: Parent.Head
-                    # End: Parent.Tail (Target Location)
-
-                    grandparent = bone.parent.parent
+                if task['chain_length'] >= 2 and bone.parent:
+                    # Standard 2-bone chain
                     parent = bone.parent
 
-                    a = grandparent.head
-                    b = parent.head # Joint
-                    c = parent.tail
+                    # Top: parent.head
+                    # Joint: bone.head
+                    # End: bone.tail
 
-                    # If straight line, we can't determine pole easily.
-                    # Use 'X' axis of the joint bone as default?
-                    # Or 'Z'?
+                    # Pole Logic:
+                    # joint = bone.head
+                    # top = parent.head
+                    # end = bone.tail
 
-                    # Standard Pole Vector often uses the Knee direction.
-                    # Let's project 'b' away from line 'a-c'.
-                    # But often legs are modeled straight.
-                    # If straight, use bone local X or Z?
-                    # Create Pole at b + offset.
+                    # Vector from top to joint
+                    v1 = (bone.head - parent.head).normalized()
+                    # Vector from joint to end
+                    v2 = (bone.tail - bone.head).normalized()
 
-                    # Let's use the local X axis of the Parent bone (the one bending).
-                    # x_axis = parent.x_axis? (In EditBone, it's computed from roll)
-                    # We don't have easy access to matrix in EditMode without recalculation.
-                    # But we can assume Z is forward (based on create_armature logic).
-                    # create_armature aligns Bone Y to Object Z.
-                    # It aligns Bone Z (Roll) to Object X.
-                    # So 'Z' is "Sideways"? 'X' is "Forward"?
-                    # In Blender Bone Space: Y is along bone. X and Z are perpendicular.
-                    # If we aligned Bone Z to Object X, then Bone X is Object Y (approx).
+                    # If collinear, cross product is zero.
+                    # Try using bone's local Z or X.
+                    # We can't access Pose info here easily.
+                    # But we can assume create_armature aligned bone Z to Object X?
+                    # Or we can just project out.
 
-                    # Let's try placing Pole along Local Z axis (which corresponds to Object X).
-                    # Or Global Y?
+                    # Let's assume knee/elbow is pre-bent in modeling?
+                    # If pre-bent, the joint is not on the line Top-End.
+                    # Calculate plane normal?
 
-                    # Safer: Just place it somewhere "in front" of the joint.
-                    # (0, -1, 0) relative to joint?
+                    # Let's just use a fixed offset relative to the joint based on world axes if collinear?
+                    # Or just +Y relative to joint?
 
-                    # Let's use a simple offset from the joint.
-                    pole_pos = b + mathutils.Vector((0, 0, 1)) # Dummy default
+                    # Standard Pole Offset: In front of the knee.
+                    # We'll use a simple logic: (v1 + v2).normalized() gives bisector?
+                    # No, we want the "bend" direction.
+                    # It's actually derived from the current bend.
+
+                    # Let's fallback to "In front of the joint" (Global Y or Local Z?)
+
+                    pole_pos = bone.head + mathutils.Vector((0, 1, 0)) # Crude default
 
                 else:
-                    # Simple fallback
+                    # Fallback
                     pole_pos = bone.head + mathutils.Vector((0, 1, 0))
 
                 if pole_name not in amt.edit_bones:
@@ -1106,8 +1082,8 @@ def apply_controls(context, armature):
         ik_pbone = armature.pose.bones.get(target_name)
         pole_pbone = armature.pose.bones.get(pole_name)
 
-        # Determine Constraint Owner (Parent)
-        owner_pbone = pbone.parent if pbone.parent else pbone
+        # Determine Constraint Owner (Self)
+        owner_pbone = pbone
 
         if owner_pbone and ik_pbone:
             # Apply Constraint
@@ -1117,7 +1093,7 @@ def apply_controls(context, armature):
             if pole_pbone:
                 c.pole_target = armature
                 c.pole_subtarget = pole_name
-                c.pole_angle = 0 # Default angle, user might need to adjust
+                c.pole_angle = 0
 
             c.chain_count = chain_len
 
