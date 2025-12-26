@@ -75,6 +75,10 @@ def validate_selection(context):
 
             pistons[pid].add(ptype)
 
+    # 4. Hinge in Piston Check (Not strictly an error, but good to know)
+    # If using Pistons, ensure Hinge objects exist for proper alignment?
+    # Not mandatory, but prevents "bad alignment" complaints.
+
     for pid, types in pistons.items():
         # Check for incomplete pairs
         if "Cyl" in types and "Rod" not in types:
@@ -420,6 +424,153 @@ def create_armature(context, rig_roots, symmetric_origin):
             node_to_bone[node] = bone.name
             create_bones_recursive(node.children, bone)
 
+    # -------------------------------------------------------------
+    # PRE-PASS: Identify Piston Targets for Look-At Alignment
+    # -------------------------------------------------------------
+    piston_map = {} # Map ID -> {Cyl: node, Rod: node}
+
+    # Helper to traverse tree and build map
+    def collect_pistons(nodes):
+        for node in nodes:
+            # Check if this node comes from a Piston Collection
+            # Collection Name logic from validate_selection
+            col = node.origin_obj.users_collection[0]
+            col_name = col.name.replace("_Mirrored", "")
+
+            match = re.match(r"Piston_(.+?)_(Cyl|Rod)", col_name)
+            if match:
+                pid = match.group(1)
+                ptype = match.group(2)
+
+                # We need to handle Side (L/R) if mirrored
+                # Node stores is_mirrored_side
+                side_suffix = ""
+                if node.is_mirrored_side == 'L': side_suffix = "_L"
+                elif node.is_mirrored_side == 'R': side_suffix = "_R"
+
+                # Make a unique key for this piston instance
+                instance_key = f"{pid}{side_suffix}"
+
+                if instance_key not in piston_map:
+                    piston_map[instance_key] = {}
+                piston_map[instance_key][ptype] = node
+
+            collect_pistons(node.children)
+
+    collect_pistons(rig_roots)
+
+    # -------------------------------------------------------------
+    # RECURSIVE BONE CREATION (Updated for Pistons)
+    # -------------------------------------------------------------
+
+    def create_bones_recursive(nodes, parent_bone=None):
+        for node in nodes:
+            bone = amt.edit_bones.new(node.name)
+
+            obj = node.origin_obj
+            mat = obj.matrix_world
+
+            final_head = calculate_bone_head(node)
+            final_tail = None # Will calculate
+
+            # Check if Piston
+            is_piston_node = False
+            # Re-check regex or lookup in map? Map is faster/cleaner if we reverse lookup?
+            # Or just do regex again.
+            col = node.origin_obj.users_collection[0]
+            col_name = col.name.replace("_Mirrored", "")
+            piston_match = re.match(r"Piston_(.+?)_(Cyl|Rod)", col_name)
+
+            if piston_match:
+                is_piston_node = True
+                pid = piston_match.group(1)
+                ptype = piston_match.group(2)
+
+                side_suffix = ""
+                if node.is_mirrored_side == 'L': side_suffix = "_L"
+                elif node.is_mirrored_side == 'R': side_suffix = "_R"
+
+                instance_key = f"{pid}{side_suffix}"
+
+                # Find Target
+                target_type = "Rod" if ptype == "Cyl" else "Cyl"
+                target_node = piston_map.get(instance_key, {}).get(target_type)
+
+                if target_node:
+                    # Calculate Vector to Target Head
+                    target_head = calculate_bone_head(target_node)
+                    vec = target_head - final_head
+
+                    # Length? Use vector length or Object dimension?
+                    # Using vector length makes the bone touch the target pivot.
+                    # This is visually clean for pistons.
+                    # But if distance is zero (overlap), fallback.
+                    dist = vec.length
+                    if dist < 0.001:
+                         # Fallback
+                         length = max(obj.dimensions.length * 0.5, 0.2)
+                         z_axis = mat.col[2].xyz.normalized()
+                         vec = z_axis * length
+
+                    final_tail = final_head + vec
+
+                    # Align Bone Z to Hinge Z (Roll)
+                    # Hinge Z is obj.matrix_world.col[2]
+                    # We want rotation around this axis.
+                    hinge_z = mat.col[2].xyz.normalized()
+
+                    # Handle Mirroring for Hinge Axis
+                    if node.is_mirrored_side == 'R' and symmetric_origin:
+                        origin_mat = symmetric_origin.matrix_world
+                        z_local = origin_mat.inverted().to_3x3() @ hinge_z
+                        z_local.x *= -1 # Mirror X
+                        z_mirrored = origin_mat.to_3x3() @ z_local
+                        hinge_z = z_mirrored
+
+                    bone.head = final_head
+                    bone.tail = final_tail
+                    bone.align_roll(hinge_z)
+
+            if not is_piston_node:
+                # STANDARD LOGIC
+                # Align Bone to Object's Local Z axis (Y of bone = Z of object)
+                z_axis = mat.col[2].xyz.normalized()
+
+                # Readability: Use max dimension or scale, with minimum
+                length = max(obj.dimensions.length * 0.5, 0.2)
+
+                final_tail = final_head + (z_axis * length)
+
+                # Handle Mirroring for Vector/Tail
+                if node.is_mirrored_side == 'R' and symmetric_origin:
+                    origin_mat = symmetric_origin.matrix_world
+                    z_local = origin_mat.inverted().to_3x3() @ z_axis
+                    z_local.x *= -1 # Mirror X
+                    z_mirrored = origin_mat.to_3x3() @ z_local
+
+                    final_tail = final_head + (z_mirrored * length)
+
+                bone.head = final_head
+                bone.tail = final_tail
+
+                # Align Bone Z to Object X (mat.col[0]) for consistency
+                x_axis = mat.col[0].xyz.normalized()
+                if node.is_mirrored_side == 'R' and symmetric_origin:
+                    origin_mat = symmetric_origin.matrix_world
+                    x_local = origin_mat.inverted().to_3x3() @ x_axis
+                    x_local.x *= -1
+                    x_mirrored = origin_mat.to_3x3() @ x_local
+                    bone.align_roll(x_mirrored)
+                else:
+                    bone.align_roll(x_axis)
+
+            if parent_bone:
+                bone.parent = parent_bone
+                bone.use_connect = False # Disable connection
+
+            node_to_bone[node] = bone.name
+            create_bones_recursive(node.children, bone)
+
     create_bones_recursive(rig_roots)
 
     bpy.ops.object.mode_set(mode='POSE')
@@ -599,15 +750,39 @@ def apply_piston_constraints(armature, pbone):
     # Standard Bone: Y is length axis.
     # So we want Y to point at Target.
 
-    # Check if constraint exists
-    cons_name = "Piston_Track"
-    if cons_name not in pbone.constraints:
+    # Check if constraints exist
+
+    # 1. Look At (Damped Track)
+    track_cons_name = "Piston_Track"
+    if track_cons_name not in pbone.constraints:
         c = pbone.constraints.new('DAMPED_TRACK')
-        c.name = cons_name
+        c.name = track_cons_name
         c.target = armature
         c.subtarget = target_name
         c.track_axis = 'TRACK_Y' # Bone Y points to target
         c.influence = 1.0
+
+    # 2. Limit Rotation (Keep it planar/hinged)
+    # We aligned Bone Z to Hinge Z in create_armature.
+    # So we want to allow rotation around Z, but lock X and Y (Twist).
+    limit_cons_name = "Piston_Limit"
+    if limit_cons_name not in pbone.constraints:
+        c = pbone.constraints.new('LIMIT_ROTATION')
+        c.name = limit_cons_name
+        c.owner_space = 'LOCAL'
+
+        # Lock X (Sideways tilt)
+        c.use_limit_x = True
+        c.min_x = 0
+        c.max_x = 0
+
+        # Lock Y (Twist along barrel) - Usually desireable for pistons
+        c.use_limit_y = True
+        c.min_y = 0
+        c.max_y = 0
+
+        # Allow Z (Hinge rotation)
+        c.use_limit_z = False
 
     return True
 
