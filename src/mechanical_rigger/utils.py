@@ -30,18 +30,7 @@ def validate_selection(context):
     if not selected_objects:
         return ["No objects selected."]
 
-    # 1. Scale and Rotation Checks
-    for obj in selected_objects:
-        if obj.type == 'MESH':
-            # Check Scale (should be close to 1,1,1)
-            scale = obj.scale
-            if not (abs(scale.x - 1.0) < 0.001 and abs(scale.y - 1.0) < 0.001 and abs(scale.z - 1.0) < 0.001):
-                errors.append(f"Object '{obj.name}' has unapplied scale ({scale.x:.2f}, {scale.y:.2f}, {scale.z:.2f}). Apply Scale (Ctrl+A) first.")
-
-            # Rotation check is less critical but good to note
-            # We skip rotation check as user said "mostly" applied, but sometimes useful not to.
-
-    # 2. Mirroring Requirements
+    # 1. Mirroring Requirements
     uses_mirrored_collection = False
     for obj in selected_objects:
         for col in obj.users_collection:
@@ -287,12 +276,19 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     context.collection.objects.link(new_mesh_obj)
                     bpy.data.objects.remove(new_obj, do_unlink=True)
                     new_obj = new_mesh_obj
-                    bpy.ops.object.select_all(action='DESELECT')
-                    new_obj.select_set(True)
-                    bpy.context.view_layer.objects.active = new_obj
                 else:
                     new_obj.data = mesh_from_eval
                     new_obj.modifiers.clear()
+
+                # Automatically apply scale to the copy to ensure clean 1,1,1 scale for export
+                # This avoids users needing to apply scale on linked data.
+
+                # CRITICAL: Ensure we are operating ONLY on the new copy
+                bpy.ops.object.select_all(action='DESELECT')
+                new_obj.select_set(True)
+                bpy.context.view_layer.objects.active = new_obj
+
+                bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
                 new_obj['mech_bone_name'] = node.name
                 processed_objects.append(new_obj)
