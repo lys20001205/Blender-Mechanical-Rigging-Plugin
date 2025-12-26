@@ -1,4 +1,4 @@
-﻿import bpy
+import bpy
 import mathutils
 import math
 import re
@@ -131,28 +131,6 @@ def analyze_hierarchy(selected_objects):
         if is_new_bone:
             is_mirrored_col = "_Mirrored" in col.name
             base_name = col.name.replace("_Mirrored", "")
-
-            # Inherit names from object if collection is generic?
-            # Existing logic uses Collection Name.
-            # If Piston, we might want to use Object name logic?
-            # But the requirement is Piston_<ID>_Cyl is the object name.
-            # If the user put Piston_Arm_Cyl in a collection named "ArmPiston", base_name is "ArmPiston".
-            # This is fine. The bone will be named "ArmPiston" (or _L/_R).
-            # Wait, if we rely on bone names matching object names for pistons, this might be tricky if we rename bones based on collections.
-
-            # IMPORTANT: The current logic names bones based on COLLECTION names.
-            # If the user has many objects in one collection, they get merged to one bone.
-            # For Pistons, usually Cyl and Rod are separate moving parts, so they MUST be in separate collections or
-            # the logic needs to change to support object-based bones.
-
-            # User workflow: "Parent Cyl to UpperArm, Rod to LowerArm".
-            # If they are in the same collection as parent, they merge?
-            # No, `is_new_bone` checks `obj_to_col[parent_node] != col`.
-            # So if Cyl is in a new collection, it gets a bone.
-            # If Cyl is in same collection as UpperArm, it merges.
-            # Mechanical rigging implies moving parts = separate bones.
-            # So user must put them in separate collections?
-            # Or we should update logic to always create bone if object name starts with Piston_?
 
             if is_mirrored_col:
                 name_l = f"{base_name}_L"
@@ -801,10 +779,10 @@ def apply_controls(context, armature):
     coll_center = ensure_bone_collection(armature.data, "Center")
     coll_mech = ensure_bone_collection(armature.data, "Mechanics") # For Pistons
 
-    ik_tasks = [] # List of (bone_name, ik_target_name, chain_length, settings)
+    ik_tasks = [] # List of (bone_name, ik_target_name, pole_target_name, chain_length, settings)
 
     # Lists for Cleanup (Store DATA, not Objects, as Edit Mode invalidates objects)
-    cleanup_ik_bones = [] # Names of _IK bones to remove
+    cleanup_ik_bones = [] # Names of _IK and _Pole bones to remove
     cleanup_ik_constraints = [] # Tuples of (bone_name, constraint_name/type) to remove
 
     # Lists for Config
@@ -814,6 +792,10 @@ def apply_controls(context, armature):
 
     # First pass: Set up Visuals (Color, Shape) and Identify IK needs
     for pbone in armature.pose.bones:
+        # Check if this is an IK/Pole bone to avoid overwriting shapes
+        if pbone.name.endswith("_IK") or pbone.name.endswith("_Pole"):
+            continue
+
         settings = pbone.mech_rig_settings
 
         # Determine Color & Collection
@@ -891,20 +873,37 @@ def apply_controls(context, armature):
 
         # IK Logic
         ik_target_name = f"{pbone.name}_IK"
+        pole_target_name = f"{pbone.name}_Pole"
 
         if settings.use_ik:
             # 1. Check if constraint needs adding
             has_ik_constraint = False
-            for c in pbone.constraints:
-                if c.type == 'IK':
-                    has_ik_constraint = True
-                    c.chain_count = settings.ik_chain_length # Update length
-                    break
+            constraint_owner = pbone.parent if pbone.parent else pbone
+
+            # If parent exists, check parent constraints. If not, check self (fallback)
+            # Actually, we should check where we INTEND to put it.
+            # We intend to put it on pbone.parent
+            if pbone.parent:
+                for c in pbone.parent.constraints:
+                    if c.type == 'IK' and c.target == armature and c.subtarget == ik_target_name:
+                        has_ik_constraint = True
+                        c.chain_count = settings.ik_chain_length
+                        break
+            else:
+                # If no parent, we put it on pbone? Or disable?
+                # Without parent, chain_length 2 doesn't make sense.
+                # But let's support 1.
+                for c in pbone.constraints:
+                     if c.type == 'IK' and c.target == armature and c.subtarget == ik_target_name:
+                        has_ik_constraint = True
+                        c.chain_count = settings.ik_chain_length
+                        break
 
             if not has_ik_constraint:
                 ik_tasks.append({
                     'bone_name': pbone.name,
                     'ik_target_name': ik_target_name,
+                    'pole_target_name': pole_target_name,
                     'chain_length': settings.ik_chain_length,
                     'color_theme': color_theme,
                     'target_coll_name': target_coll.name
@@ -912,7 +911,8 @@ def apply_controls(context, armature):
 
             # 2. Collect Locking Tasks (Traverse parents)
             # We need to lock axes on parents if they have Limit Rotation constraints
-            curr_bone = pbone
+            curr_bone = pbone.parent if pbone.parent else pbone
+
             for _ in range(settings.ik_chain_length):
                 # Check Limit Rotation
                 for c in curr_bone.constraints:
@@ -936,16 +936,21 @@ def apply_controls(context, armature):
 
         else:
             # Cleanup Dead IK
-            # 1. Mark Constraint for removal
-            for c in pbone.constraints:
-                if c.type == 'IK':
-                    cleanup_ik_constraints.append((pbone.name, c.name))
+            # 1. Mark Constraint for removal (Check Parent and Self)
+            target_bones = [pbone]
+            if pbone.parent:
+                target_bones.append(pbone.parent)
 
-            # 2. Mark Target Bone for removal if it exists
-            # We can only check existence here, actual removal in Edit Mode
-            # We assume naming convention implies ownership
+            for b in target_bones:
+                for c in b.constraints:
+                    if c.type == 'IK' and c.subtarget == ik_target_name:
+                         cleanup_ik_constraints.append((b.name, c.name))
+
+            # 2. Mark Target Bones for removal if they exist
             if ik_target_name in armature.pose.bones:
                 cleanup_ik_bones.append(ik_target_name)
+            if pole_target_name in armature.pose.bones:
+                cleanup_ik_bones.append(pole_target_name)
 
     # ---------------------------------------------------------
     # PASS 2: STRUCTURE (Edit Mode)
@@ -968,16 +973,104 @@ def apply_controls(context, armature):
         for task in ik_tasks:
             bone_name = task['bone_name']
             target_name = task['ik_target_name']
+            pole_name = task['pole_target_name']
 
             if bone_name in amt.edit_bones:
                 bone = amt.edit_bones[bone_name]
+
+                # IK Target
                 if target_name not in amt.edit_bones:
                     ik_bone = amt.edit_bones.new(target_name)
-                    ik_bone.head = bone.tail
+                    # NEW: Place at Head
+                    ik_bone.head = bone.head
                     # Align IK bone similar to bone
-                    ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
+                    ik_bone.tail = bone.head + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
                     ik_bone.parent = None
                     ik_bone.use_deform = False
+
+                # Pole Target
+                # Calculate Pole Position
+                # Ideal pole position is in the direction of the bend.
+                # If chain length >= 2, we have: Bone (Child) -> Parent (Middle) -> GrandParent (Top)
+                # The joint is at Parent.Head (Bone.Head is Parent.Tail? No. Bone.Head is connected to Parent.Tail)
+                # So Joint is Bone.Head.
+                # Top is Parent.Head.
+                # End is Bone.Tail.
+                # Wait, IK Chain of 2 usually means:
+                # Effector (Target) at Bone.Tail (normally).
+                # Controlled bones: Bone, Parent.
+
+                # BUT we moved Target to Bone.Head.
+                # Constraint is on Parent.
+                # So Controlled bones are: Parent, GrandParent.
+                # Joint is Parent.Head (Start of Parent) -> No, Joint is between Parent and Grandparent.
+                # Chain: GrandParent -> Parent.
+                # Target is at Parent.Tail (which is Bone.Head).
+                # So Joint is GrandParent.Tail == Parent.Head.
+
+                # We need a vector that points "out" from the joint.
+                # Triangle: GrandParent.Head, Parent.Head (Joint), Parent.Tail (End).
+                # But Parent.Head and GrandParent.Tail are same location.
+
+                # Pole Vector calculation:
+                # Vector1 = Joint - Top (Parent.Head - GrandParent.Head)
+                # Vector2 = End - Joint (Parent.Tail - Parent.Head)
+                # Normal = (Vector1 + Vector2).normalized() ?
+                # Or Cross product?
+
+                # We need the traversal.
+                if task['chain_length'] >= 2 and bone.parent and bone.parent.parent:
+                    # Case: Constraint on Parent. Chain covers Parent and GrandParent.
+                    # Top: GrandParent.Head
+                    # Joint: Parent.Head
+                    # End: Parent.Tail (Target Location)
+
+                    grandparent = bone.parent.parent
+                    parent = bone.parent
+
+                    a = grandparent.head
+                    b = parent.head # Joint
+                    c = parent.tail
+
+                    # If straight line, we can't determine pole easily.
+                    # Use 'X' axis of the joint bone as default?
+                    # Or 'Z'?
+
+                    # Standard Pole Vector often uses the Knee direction.
+                    # Let's project 'b' away from line 'a-c'.
+                    # But often legs are modeled straight.
+                    # If straight, use bone local X or Z?
+                    # Create Pole at b + offset.
+
+                    # Let's use the local X axis of the Parent bone (the one bending).
+                    # x_axis = parent.x_axis? (In EditBone, it's computed from roll)
+                    # We don't have easy access to matrix in EditMode without recalculation.
+                    # But we can assume Z is forward (based on create_armature logic).
+                    # create_armature aligns Bone Y to Object Z.
+                    # It aligns Bone Z (Roll) to Object X.
+                    # So 'Z' is "Sideways"? 'X' is "Forward"?
+                    # In Blender Bone Space: Y is along bone. X and Z are perpendicular.
+                    # If we aligned Bone Z to Object X, then Bone X is Object Y (approx).
+
+                    # Let's try placing Pole along Local Z axis (which corresponds to Object X).
+                    # Or Global Y?
+
+                    # Safer: Just place it somewhere "in front" of the joint.
+                    # (0, -1, 0) relative to joint?
+
+                    # Let's use a simple offset from the joint.
+                    pole_pos = b + mathutils.Vector((0, 0, 1)) # Dummy default
+
+                else:
+                    # Simple fallback
+                    pole_pos = bone.head + mathutils.Vector((0, 1, 0))
+
+                if pole_name not in amt.edit_bones:
+                    pole_bone = amt.edit_bones.new(pole_name)
+                    pole_bone.head = pole_pos
+                    pole_bone.tail = pole_pos + mathutils.Vector((0, 0, 0.2))
+                    pole_bone.parent = None
+                    pole_bone.use_deform = False
 
     # ---------------------------------------------------------
     # PASS 3: CONSTRAINTS & DRIVERS (Pose Mode)
@@ -1004,18 +1097,28 @@ def apply_controls(context, armature):
     for task in ik_tasks:
         bone_name = task['bone_name']
         target_name = task['ik_target_name']
+        pole_name = task['pole_target_name']
         chain_len = task['chain_length']
         theme = task['color_theme']
         coll_name = task['target_coll_name']
 
         pbone = armature.pose.bones.get(bone_name)
         ik_pbone = armature.pose.bones.get(target_name)
+        pole_pbone = armature.pose.bones.get(pole_name)
 
-        if pbone and ik_pbone:
+        # Determine Constraint Owner (Parent)
+        owner_pbone = pbone.parent if pbone.parent else pbone
+
+        if owner_pbone and ik_pbone:
             # Apply Constraint
-            c = pbone.constraints.new('IK')
+            c = owner_pbone.constraints.new('IK')
             c.target = armature
             c.subtarget = target_name
+            if pole_pbone:
+                c.pole_target = armature
+                c.pole_subtarget = pole_name
+                c.pole_angle = 0 # Default angle, user might need to adjust
+
             c.chain_count = chain_len
 
             # Setup IK-FK Switch Property on Target
@@ -1038,18 +1141,30 @@ def apply_controls(context, armature):
             context.view_layer.objects.active = armature
 
             ik_pbone.custom_shape = widget_obj
-            # Fixed scale for IK Handle or proportional? 1.5 is standard logic.
-            # Let's scale it by global scale too.
             base_ik_scale = 1.5 * global_scale
             ik_pbone.custom_shape_scale_xyz = (base_ik_scale, base_ik_scale, base_ik_scale)
             ik_pbone.custom_shape_translation = (0, 0, 0)
-
             ik_pbone.color.palette = theme
 
             if coll_name in coll_map:
                 target_coll = coll_map[coll_name]
                 if ik_pbone.bone.name not in [b.name for b in target_coll.bones]:
                     target_coll.assign(ik_pbone.bone)
+
+            # Visuals for Pole Target
+            if pole_pbone:
+                widget_pole = get_or_create_widget("WGT_Bone_SPHERE", 'SPHERE')
+                context.view_layer.objects.active = armature
+
+                pole_pbone.custom_shape = widget_pole
+                base_pole_scale = 0.5 * global_scale
+                pole_pbone.custom_shape_scale_xyz = (base_pole_scale, base_pole_scale, base_pole_scale)
+                pole_pbone.color.palette = theme
+
+                if coll_name in coll_map:
+                    if pole_pbone.bone.name not in [b.name for b in target_coll.bones]:
+                        target_coll.assign(pole_pbone.bone)
+
 
     # 3. Update IK Locks
     # We must re-acquire references because we switched modes
