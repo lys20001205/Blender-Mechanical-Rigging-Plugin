@@ -986,6 +986,8 @@ def apply_controls(context, armature):
                     ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
                     ik_bone.parent = None
                     ik_bone.use_deform = False
+                    # CRITICAL: Align roll to match FK bone so visuals are consistent
+                    ik_bone.roll = bone.roll
 
                 # Pole Target
                 # Calculate Pole Position (Updated for Standard IK)
@@ -1092,10 +1094,15 @@ def apply_controls(context, armature):
             c = owner_pbone.constraints.new('IK')
             c.target = armature
             c.subtarget = target_name
-            if pole_pbone:
-                c.pole_target = armature
-                c.pole_subtarget = pole_name
-                c.pole_angle = 0
+
+            # Note: We generate the Pole Bone but do NOT auto-assign it.
+            # Auto-assigning with pole_angle=0 causes snapping if the
+            # geometric calculation isn't perfect for the solver's internal axes.
+            # User can assign it manually using the pipette.
+            # if pole_pbone:
+            #    c.pole_target = armature
+            #    c.pole_subtarget = pole_name
+            #    c.pole_angle = 0
 
             c.chain_count = chain_len
 
