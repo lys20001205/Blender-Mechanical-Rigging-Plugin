@@ -1,6 +1,7 @@
 ﻿import bpy
 import mathutils
 import math
+import re
 
 # --- Data Structures for Analysis ---
 class BoneNode:
@@ -15,6 +16,77 @@ class BoneNode:
     def add_child(self, node):
         self.children.append(node)
         node.parent = self
+
+# --- Step 0: Validation ---
+def validate_selection(context):
+    """
+    Checks selected objects for common errors.
+    Returns a list of error strings. If empty, validation passed.
+    """
+    errors = []
+    selected_objects = context.selected_objects
+    symmetric_origin = context.scene.mech_rig_symmetric_origin
+
+    if not selected_objects:
+        return ["No objects selected."]
+
+    # 1. Mirroring Requirements
+    uses_mirrored_collection = False
+    for obj in selected_objects:
+        for col in obj.users_collection:
+            if "_Mirrored" in col.name:
+                uses_mirrored_collection = True
+                break
+        if uses_mirrored_collection:
+            break
+
+    if uses_mirrored_collection and not symmetric_origin:
+        errors.append("'_Mirrored' collection used but no 'Symmetric Origin' set in panel.")
+
+    # 3. Piston Pairing Check
+    # Convention: Collection Name matches Piston_<ID>_Cyl or Piston_<ID>_Rod
+    pistons = {}
+
+    # Regex to find Piston_ID_Type in Collection Name
+    piston_pattern = re.compile(r"Piston_(.+?)_(Cyl|Rod)")
+
+    # Identify involved collections first to avoid double counting objects
+    scanned_collections = set()
+
+    for obj in selected_objects:
+        if not obj.users_collection: continue
+        col = obj.users_collection[0]
+        if col in scanned_collections: continue
+        scanned_collections.add(col)
+
+        # Check Collection Name
+        col_name = col.name
+        # Strip _Mirrored for check?
+        clean_col_name = col_name.replace("_Mirrored", "")
+
+        match = piston_pattern.match(clean_col_name)
+
+        if match:
+            pid = match.group(1)
+            ptype = match.group(2) # Cyl or Rod
+
+            if pid not in pistons:
+                pistons[pid] = set()
+
+            pistons[pid].add(ptype)
+
+    # 4. Hinge in Piston Check (Not strictly an error, but good to know)
+    # If using Pistons, ensure Hinge objects exist for proper alignment? 
+    # Not mandatory, but prevents "bad alignment" complaints.
+
+    for pid, types in pistons.items():
+        # Check for incomplete pairs
+        if "Cyl" in types and "Rod" not in types:
+            errors.append(f"Piston '{pid}' has Cyl but missing Rod (Piston_{pid}_Rod).")
+        if "Rod" in types and "Cyl" not in types:
+            errors.append(f"Piston '{pid}' has Rod but missing Cyl (Piston_{pid}_Cyl).")
+
+    return errors
 
 # --- Step 1: Hierarchy Analysis ---
 
@@ -60,6 +132,28 @@ def analyze_hierarchy(selected_objects):
             is_mirrored_col = "_Mirrored" in col.name
             base_name = col.name.replace("_Mirrored", "")
 
+            # Inherit names from object if collection is generic?
+            # Existing logic uses Collection Name.
+            # If Piston, we might want to use Object name logic?
+            # But the requirement is Piston_<ID>_Cyl is the object name.
+            # If the user put Piston_Arm_Cyl in a collection named "ArmPiston", base_name is "ArmPiston".
+            # This is fine. The bone will be named "ArmPiston" (or _L/_R).
+            # Wait, if we rely on bone names matching object names for pistons, this might be tricky if we rename bones based on collections.
+
+            # IMPORTANT: The current logic names bones based on COLLECTION names.
+            # If the user has many objects in one collection, they get merged to one bone.
+            # For Pistons, usually Cyl and Rod are separate moving parts, so they MUST be in separate collections or
+            # the logic needs to change to support object-based bones.
+
+            # User workflow: "Parent Cyl to UpperArm, Rod to LowerArm".
+            # If they are in the same collection as parent, they merge?
+            # No, `is_new_bone` checks `obj_to_col[parent_node] != col`.
+            # So if Cyl is in a new collection, it gets a bone.
+            # If Cyl is in same collection as UpperArm, it merges.
+            # Mechanical rigging implies moving parts = separate bones.
+            # So user must put them in separate collections?
+            # Or we should update logic to always create bone if object name starts with Piston_?
+
             if is_mirrored_col:
                 name_l = f"{base_name}_L"
                 node_l = BoneNode(name_l, obj, is_mirrored_side='L')
@@ -94,6 +188,14 @@ def analyze_hierarchy(selected_objects):
         else:
             node_l = parent_node_l
             node_r = parent_node_r
+
+            # IMPORTANT: If we are staying in the same bone (node), checks if this object 
+            # is a better representative for the pivot (e.g., "Hinge_...").
+            # If so, update the origin_obj.
+            if node_l and obj.name.startswith("Hinge_"):
+                node_l.origin_obj = obj
+                if node_r:
+                    node_r.origin_obj = obj
 
         for child in obj.children:
             if child in selected_set:
@@ -178,12 +280,19 @@ def process_meshes(context, rig_roots, symmetric_origin):
                     context.collection.objects.link(new_mesh_obj)
                     bpy.data.objects.remove(new_obj, do_unlink=True)
                     new_obj = new_mesh_obj
-                    bpy.ops.object.select_all(action='DESELECT')
-                    new_obj.select_set(True)
-                    bpy.context.view_layer.objects.active = new_obj
                 else:
                     new_obj.data = mesh_from_eval
                     new_obj.modifiers.clear()
+
+                # Automatically apply scale to the copy to ensure clean 1,1,1 scale for export
+                # This avoids users needing to apply scale on linked data.
+
+                # CRITICAL: Ensure we are operating ONLY on the new copy
+                bpy.ops.object.select_all(action='DESELECT')
+                new_obj.select_set(True)
+                bpy.context.view_layer.objects.active = new_obj
+
+                bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
                 new_obj['mech_bone_name'] = node.name
                 processed_objects.append(new_obj)
@@ -307,6 +416,153 @@ def create_armature(context, rig_roots, symmetric_origin):
                 bone.align_roll(x_mirrored)
             else:
                 bone.align_roll(x_axis)
+
+            if parent_bone:
+                bone.parent = parent_bone
+                bone.use_connect = False # Disable connection
+
+            node_to_bone[node] = bone.name
+            create_bones_recursive(node.children, bone)
+
+    # -------------------------------------------------------------
+    # PRE-PASS: Identify Piston Targets for Look-At Alignment
+    # -------------------------------------------------------------
+    piston_map = {} # Map ID -> {Cyl: node, Rod: node}
+
+    # Helper to traverse tree and build map
+    def collect_pistons(nodes):
+        for node in nodes:
+            # Check if this node comes from a Piston Collection
+            # Collection Name logic from validate_selection
+            col = node.origin_obj.users_collection[0]
+            col_name = col.name.replace("_Mirrored", "")
+
+            match = re.match(r"Piston_(.+?)_(Cyl|Rod)", col_name)
+            if match:
+                pid = match.group(1)
+                ptype = match.group(2)
+
+                # We need to handle Side (L/R) if mirrored
+                # Node stores is_mirrored_side
+                side_suffix = ""
+                if node.is_mirrored_side == 'L': side_suffix = "_L"
+                elif node.is_mirrored_side == 'R': side_suffix = "_R"
+
+                # Make a unique key for this piston instance
+                instance_key = f"{pid}{side_suffix}"
+
+                if instance_key not in piston_map:
+                    piston_map[instance_key] = {}
+                piston_map[instance_key][ptype] = node
+
+            collect_pistons(node.children)
+
+    collect_pistons(rig_roots)
+
+    # -------------------------------------------------------------
+    # RECURSIVE BONE CREATION (Updated for Pistons)
+    # -------------------------------------------------------------
+
+    def create_bones_recursive(nodes, parent_bone=None):
+        for node in nodes:
+            bone = amt.edit_bones.new(node.name)
+
+            obj = node.origin_obj
+            mat = obj.matrix_world
+
+            final_head = calculate_bone_head(node)
+            final_tail = None # Will calculate
+
+            # Check if Piston
+            is_piston_node = False
+            # Re-check regex or lookup in map? Map is faster/cleaner if we reverse lookup?
+            # Or just do regex again.
+            col = node.origin_obj.users_collection[0]
+            col_name = col.name.replace("_Mirrored", "")
+            piston_match = re.match(r"Piston_(.+?)_(Cyl|Rod)", col_name)
+
+            if piston_match:
+                is_piston_node = True
+                pid = piston_match.group(1)
+                ptype = piston_match.group(2)
+
+                side_suffix = ""
+                if node.is_mirrored_side == 'L': side_suffix = "_L"
+                elif node.is_mirrored_side == 'R': side_suffix = "_R"
+
+                instance_key = f"{pid}{side_suffix}"
+
+                # Find Target
+                target_type = "Rod" if ptype == "Cyl" else "Cyl"
+                target_node = piston_map.get(instance_key, {}).get(target_type)
+
+                if target_node:
+                    # Calculate Vector to Target Head
+                    target_head = calculate_bone_head(target_node)
+                    vec = target_head - final_head
+
+                    # Length? Use vector length or Object dimension?
+                    # Using vector length makes the bone touch the target pivot.
+                    # This is visually clean for pistons.
+                    # But if distance is zero (overlap), fallback.
+                    dist = vec.length
+                    if dist < 0.001:
+                        # Fallback
+                        length = max(obj.dimensions.length * 0.5, 0.2)
+                        z_axis = mat.col[2].xyz.normalized()
+                        vec = z_axis * length
+
+                    final_tail = final_head + vec
+
+                    # Align Bone Z to Hinge Z (Roll)
+                    # Hinge Z is obj.matrix_world.col[2]
+                    # We want rotation around this axis.
+                    hinge_z = mat.col[2].xyz.normalized()
+
+                    # Handle Mirroring for Hinge Axis
+                    if node.is_mirrored_side == 'R' and symmetric_origin:
+                        origin_mat = symmetric_origin.matrix_world
+                        z_local = origin_mat.inverted().to_3x3() @ hinge_z
+                        z_local.x *= -1 # Mirror X
+                        z_mirrored = origin_mat.to_3x3() @ z_local
+                        hinge_z = z_mirrored
+
+                    bone.head = final_head
+                    bone.tail = final_tail
+                    bone.align_roll(hinge_z)
+
+            if not is_piston_node:
+                # STANDARD LOGIC
+                # Align Bone to Object's Local Z axis (Y of bone = Z of object)
+                z_axis = mat.col[2].xyz.normalized()
+
+                # Readability: Use max dimension or scale, with minimum
+                length = max(obj.dimensions.length * 0.5, 0.2)
+
+                final_tail = final_head + (z_axis * length)
+
+                # Handle Mirroring for Vector/Tail
+                if node.is_mirrored_side == 'R' and symmetric_origin:
+                    origin_mat = symmetric_origin.matrix_world
+                    z_local = origin_mat.inverted().to_3x3() @ z_axis
+                    z_local.x *= -1 # Mirror X
+                    z_mirrored = origin_mat.to_3x3() @ z_local
+
+                    final_tail = final_head + (z_mirrored * length)
+
+                bone.head = final_head
+                bone.tail = final_tail
+
+                # Align Bone Z to Object X (mat.col[0]) for consistency
+                x_axis = mat.col[0].xyz.normalized()
+                if node.is_mirrored_side == 'R' and symmetric_origin:
+                    origin_mat = symmetric_origin.matrix_world
+                    x_local = origin_mat.inverted().to_3x3() @ x_axis
+                    x_local.x *= -1
+                    x_mirrored = origin_mat.to_3x3() @ x_local
+                    bone.align_roll(x_mirrored)
+                else:
+                    bone.align_roll(x_axis)
 
             if parent_bone:
                 bone.parent = parent_bone
@@ -446,6 +702,90 @@ def ensure_bone_collection(armature_data, name):
         col = armature_data.collections.new(name)
     return col
 
+def apply_piston_constraints(armature, pbone):
+    """
+    Checks if this bone is part of a Piston pair and applies constraints.
+    Returns True if processed as Piston (to avoid adding default controls).
+    """
+    name = pbone.name
+    # Piston_<ID>_<Type>
+    # Note: Regex needs to handle potential .L/.R suffixes from mirroring
+    # Pattern: Piston_{ID}_{Type}(_{Side})?
+
+    # Simple check first
+    if "Piston_" not in name:
+        return False
+
+    # Regex to parse ID and Type
+    # Match "Piston_" then (Group 1: ID) then "_" then (Group 2: Cyl|Rod)
+    # Then optional suffix
+    # Examples: Piston_Elbow_Cyl, Piston_Elbow_Rod, Piston_Elbow_Cyl_L
+    match = re.search(r"Piston_(.+?)_(Cyl|Rod)", name)
+    if not match:
+        return False
+
+    pid = match.group(1)
+    ptype = match.group(2) # "Cyl" or "Rod"
+
+    # Construct target name
+    target_type = "Rod" if ptype == "Cyl" else "Cyl"
+
+    # We need to find the target bone name.
+    # If the current bone has a suffix (like _L, .L, _R), the target should too.
+    # The regex extracted ID and Type from the base.
+    # Let's verify suffix.
+    suffix = name[match.end():] # e.g. "_L" or ""
+
+    target_name_base = f"Piston_{pid}_{target_type}"
+    target_name = target_name_base + suffix
+
+    target_bone = armature.pose.bones.get(target_name)
+    if not target_bone:
+        print(f"Piston warning: Target '{target_name}' not found for '{name}'")
+        return False
+
+    # Apply Damped Track (or Track To)
+    # Damped Track is usually more stable for simple pointing.
+    # We want Z axis of bone (Y of bone is length?) 
+    # Standard Bone: Y is length axis.
+    # So we want Y to point at Target.
+
+    # Check if constraints exist
+
+    # 1. Look At (Damped Track)
+    track_cons_name = "Piston_Track"
+    if track_cons_name not in pbone.constraints:
+        c = pbone.constraints.new('DAMPED_TRACK')
+        c.name = track_cons_name
+        c.target = armature
+        c.subtarget = target_name
+        c.track_axis = 'TRACK_Y' # Bone Y points to target
+        c.influence = 1.0
+
+    # 2. Limit Rotation (Keep it planar/hinged)
+    # We aligned Bone Z to Hinge Z in create_armature.
+    # So we want to allow rotation around Z, but lock X and Y (Twist).
+    limit_cons_name = "Piston_Limit"
+    if limit_cons_name not in pbone.constraints:
+        c = pbone.constraints.new('LIMIT_ROTATION')
+        c.name = limit_cons_name
+        c.owner_space = 'LOCAL'
+
+        # Lock X (Sideways tilt)
+        c.use_limit_x = True
+        c.min_x = 0
+        c.max_x = 0
+
+        # Lock Y (Twist along barrel) - Usually desireable for pistons
+        c.use_limit_y = True
+        c.min_y = 0
+        c.max_y = 0
+
+        # Allow Z (Hinge rotation)
+        c.use_limit_z = False
+
+    return True
+
 def apply_controls(context, armature):
     """
     Batched processing to avoid mode switching inside loops.
@@ -459,6 +799,7 @@ def apply_controls(context, armature):
     coll_left = ensure_bone_collection(armature.data, "Left")
     coll_right = ensure_bone_collection(armature.data, "Right")
     coll_center = ensure_bone_collection(armature.data, "Center")
+    coll_mech = ensure_bone_collection(armature.data, "Mechanics") # For Pistons
 
     ik_tasks = [] # List of (bone_name, ik_target_name, chain_length, settings)
 
@@ -486,6 +827,27 @@ def apply_controls(context, armature):
             target_coll = coll_right
             color_theme = 'THEME04' # Blue/Purple
 
+        # Piston Logic
+        is_piston = apply_piston_constraints(armature, pbone)
+        if is_piston:
+            target_coll = coll_mech
+            color_theme = 'THEME10' # Orange/Brown for mechanics?
+            # Assign Collection
+            if pbone.bone.name not in [b.name for b in target_coll.bones]:
+                target_coll.assign(pbone.bone)
+
+            pbone.color.palette = color_theme
+
+            # Pistons usually don't need control widgets, but maybe a simple one?
+            # Or none? Let's default to None or a small Box.
+            # Let's skip widget generation for pistons to keep it clean.
+            pbone.custom_shape = None
+
+            # Skip IK logic for pistons
+            continue
+
+        # Normal Bone Logic
+
         # Assign Collection
         if pbone.bone.name not in [b.name for b in target_coll.bones]:
             target_coll.assign(pbone.bone)
@@ -511,7 +873,8 @@ def apply_controls(context, armature):
                 # Use Global Scale (Default)
                 scale_val = pbone.length * global_scale
                 scale_vec = (scale_val, scale_val, scale_val)
-                loc_vec = (0, pbone.length * 0.5, 0)
+                # User Request: Place control at the head (0,0,0) not center
+                loc_vec = (0, 0, 0)
                 rot_vec = (0, 0, 0)
 
                 pbone.custom_shape_scale_xyz = scale_vec
