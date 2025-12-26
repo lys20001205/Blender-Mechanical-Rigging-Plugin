@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Blender
+*.blend1
+*.blend@
+*.crash.txt
+
+# IDEs
+.idea/
+.vscode/
+
+# Environments
+venv/
+.venv/
+env/
+
+# Logs
+*.log
