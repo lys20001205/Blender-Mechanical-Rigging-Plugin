@@ -390,7 +390,8 @@ def create_armature(context, rig_roots, symmetric_origin):
             z_axis = mat.col[2].xyz.normalized()
 
             # Readability: Use max dimension or scale, with minimum
-            length = max(obj.dimensions.length * 0.5, 0.2)
+            size_scale = context.scene.mech_rig_bone_size_scale
+            length = max(obj.dimensions.length * 0.5, 0.2) * size_scale
 
             final_tail = final_head + (z_axis * length)
 
@@ -508,7 +509,8 @@ def create_armature(context, rig_roots, symmetric_origin):
                     dist = vec.length
                     if dist < 0.001:
                         # Fallback
-                        length = max(obj.dimensions.length * 0.5, 0.2)
+                        size_scale = context.scene.mech_rig_bone_size_scale
+                        length = max(obj.dimensions.length * 0.5, 0.2) * size_scale
                         z_axis = mat.col[2].xyz.normalized()
                         vec = z_axis * length
 
@@ -537,7 +539,8 @@ def create_armature(context, rig_roots, symmetric_origin):
                 z_axis = mat.col[2].xyz.normalized()
 
                 # Readability: Use max dimension or scale, with minimum
-                length = max(obj.dimensions.length * 0.5, 0.2)
+                size_scale = context.scene.mech_rig_bone_size_scale
+                length = max(obj.dimensions.length * 0.5, 0.2) * size_scale
 
                 final_tail = final_head + (z_axis * length)
 
