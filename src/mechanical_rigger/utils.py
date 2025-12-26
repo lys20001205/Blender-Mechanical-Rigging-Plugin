@@ -992,9 +992,6 @@ def apply_controls(context, armature):
                 # Chain includes Bone and Parent.
                 # Joint is at Bone.Head (which is Parent.Tail).
 
-                # We need a vector that points "out" from the joint.
-                # Triangle: Parent.Head (Top), Bone.Head (Joint), Bone.Tail (End/Target).
-
                 pole_pos = None
 
                 if task['chain_length'] >= 2 and bone.parent:
@@ -1002,40 +999,45 @@ def apply_controls(context, armature):
                     parent = bone.parent
 
                     # Top: parent.head
-                    # Joint: bone.head
+                    # Joint: bone.head (where the bend happens)
                     # End: bone.tail
 
-                    # Pole Logic:
-                    # joint = bone.head
-                    # top = parent.head
-                    # end = bone.tail
+                    top = parent.head
+                    joint = bone.head
+                    end = bone.tail
 
                     # Vector from top to joint
-                    v1 = (bone.head - parent.head).normalized()
+                    v_upper = joint - top
                     # Vector from joint to end
-                    v2 = (bone.tail - bone.head).normalized()
+                    v_lower = end - joint
 
-                    # If collinear, cross product is zero.
-                    # Try using bone's local Z or X.
-                    # We can't access Pose info here easily.
-                    # But we can assume create_armature aligned bone Z to Object X?
-                    # Or we can just project out.
+                    # Projected point of Joint onto Line(Top -> End)
+                    line_vec = end - top
+                    line_len_sq = line_vec.length_squared
 
-                    # Let's assume knee/elbow is pre-bent in modeling?
-                    # If pre-bent, the joint is not on the line Top-End.
-                    # Calculate plane normal?
+                    if line_len_sq > 0.0001:
+                        # Project Joint relative to Top onto Line
+                        proj_factor = (joint - top).dot(line_vec) / line_len_sq
+                        proj_point = top + line_vec * proj_factor
 
-                    # Let's just use a fixed offset relative to the joint based on world axes if collinear?
-                    # Or just +Y relative to joint?
+                        # Orthogonal Vector (Bend Direction)
+                        bend_dir = joint - proj_point
 
-                    # Standard Pole Offset: In front of the knee.
-                    # We'll use a simple logic: (v1 + v2).normalized() gives bisector?
-                    # No, we want the "bend" direction.
-                    # It's actually derived from the current bend.
-
-                    # Let's fallback to "In front of the joint" (Global Y or Local Z?)
-
-                    pole_pos = bone.head + mathutils.Vector((0, 1, 0)) # Crude default
+                        if bend_dir.length > 0.001:
+                             # Chain is bent, use this direction
+                             pole_dir = bend_dir.normalized()
+                             # Place pole out from joint
+                             pole_pos = joint + pole_dir * (v_upper.length + v_lower.length) * 0.5
+                        else:
+                             # Chain is straight (collinear)
+                             # Use Bone's X axis (usually forward/side depending on roll)
+                             # In EditBone, we have x_axis.
+                             # If X is the hinge axis (or Z?), we push along the other?
+                             # Let's push along local X.
+                             pole_pos = joint + bone.x_axis * (v_upper.length + v_lower.length) * 0.5
+                    else:
+                        # Zero length chain?
+                         pole_pos = joint + mathutils.Vector((0, 1, 0))
 
                 else:
                     # Fallback
@@ -1119,7 +1121,19 @@ def apply_controls(context, armature):
             ik_pbone.custom_shape = widget_obj
             base_ik_scale = 1.5 * global_scale
             ik_pbone.custom_shape_scale_xyz = (base_ik_scale, base_ik_scale, base_ik_scale)
-            ik_pbone.custom_shape_translation = (0, 0, 0)
+
+            # VISUAL OFFSET: User wants control at Bone Head, but logic requires it at Tail.
+            # We shift the visual shape by -Length along Y (Bone Axis).
+            # Note: custom_shape_translation is in Bone Local Space.
+            # IK Bone is aligned with FK Bone. Y points Tail-wards.
+            # So -Y points to Head.
+            # We must use the original bone's length.
+
+            offset_y = -pbone.length
+            # Note: Translation is not affected by custom_shape_scale if override is not set?
+            # Actually, standard behavior: translation is in local units.
+
+            ik_pbone.custom_shape_translation = (0, offset_y, 0)
             ik_pbone.color.palette = theme
 
             if coll_name in coll_map:
