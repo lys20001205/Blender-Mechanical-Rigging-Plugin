@@ -648,11 +648,20 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
     ensure_in_collection(armature, armature_col)
     ensure_in_collection(combined_mesh, armature_col)
 
-    # --- Hide Original Objects ---
+    # --- Hide Original Collections ---
     if original_selection:
+        cols_to_hide = set()
         for obj in original_selection:
-            obj.hide_viewport = True
-            obj.hide_render = True
+            for col in obj.users_collection:
+                cols_to_hide.add(col)
+
+        # Ensure we don't hide the output collection if it happens to be the same
+        if armature_col in cols_to_hide:
+            cols_to_hide.remove(armature_col)
+
+        for col in cols_to_hide:
+            col.hide_viewport = True
+            col.hide_render = True
 
 # --- Step 4: Controls ---
 
