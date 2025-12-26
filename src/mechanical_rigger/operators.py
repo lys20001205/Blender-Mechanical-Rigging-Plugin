@@ -1,6 +1,30 @@
-﻿import bpy
+import bpy
 import mathutils
 from . import utils
+
+class MECH_RIG_OT_ValidateHierarchy(bpy.types.Operator):
+    """Checks the selected hierarchy for common errors before rigging."""
+    bl_idname = "mech_rig.validate_hierarchy"
+    bl_label = "Validate Hierarchy"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        errors = utils.validate_selection(context)
+
+        if not errors:
+            self.report({'INFO'}, "Validation Passed! Hierarchy is good to rig.")
+            return {'FINISHED'}
+
+        # Show errors in a popup
+        def draw_popup(self, context):
+            layout = self.layout
+            layout.label(text="Validation Errors:", icon='ERROR')
+            for err in errors:
+                layout.label(text=f"- {err}")
+            layout.label(text="Please fix these issues before rigging.")
+
+        context.window_manager.popup_menu(draw_popup, title="Validation Failed", icon='ERROR')
+        return {'CANCELLED'}
 
 class MECH_RIG_OT_AutoRig(bpy.types.Operator):
     """Detects hierarchy, handles collections, mirroring, and generates a rigid mechanical rig."""
@@ -13,6 +37,13 @@ class MECH_RIG_OT_AutoRig(bpy.types.Operator):
         if not selected_objects:
             self.report({'ERROR'}, "No objects selected.")
             return {'CANCELLED'}
+
+        # Optional: Run validation automatically?
+        # Let's run it and fail if error.
+        errors = utils.validate_selection(context)
+        if errors:
+             self.report({'ERROR'}, "Validation Failed. Run 'Validate Hierarchy' for details.")
+             return {'CANCELLED'}
 
         symmetric_origin = context.scene.mech_rig_symmetric_origin
 
@@ -191,12 +222,14 @@ class MECH_RIG_OT_ApplyWidgetTransform(bpy.types.Operator):
         return {'FINISHED'}
 
 def register():
+    bpy.utils.register_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.register_class(MECH_RIG_OT_AutoRig)
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.register_class(MECH_RIG_OT_ApplyWidgetTransform)
 
 def unregister():
+    bpy.utils.unregister_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.unregister_class(MECH_RIG_OT_AutoRig)
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
