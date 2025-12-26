@@ -50,7 +50,11 @@ class VIEW3D_PT_mech_rig_generate(bpy.types.Panel):
         layout.prop(scene, "mech_rig_bone_size_scale", text="Bone Size Scale")
 
         row = layout.row(align=True)
-        row.operator("mech_rig.validate_hierarchy", text="Validate Hierarchy", icon='CHECKMARK')
+        row.operator("mech_rig.preview_rig", text="Preview Rig", icon='VIEWZOOM')
+        row.operator("mech_rig.validate_hierarchy", text="Validate", icon='CHECKMARK')
+
+        row = layout.row(align=True)
+        row.scale_y = 1.5
         row.operator("mech_rig.auto_rig", text="Generate Rig", icon='ARMATURE_DATA')
 
 class VIEW3D_PT_mech_rig_layers(bpy.types.Panel):

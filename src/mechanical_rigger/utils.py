@@ -350,11 +350,16 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
 # --- Step 3: Armature Creation ---
 
-def create_armature(context, rig_roots, symmetric_origin):
+def create_armature(context, rig_roots, symmetric_origin, is_preview=False):
     bpy.ops.object.add(type='ARMATURE', enter_editmode=True)
     amt_obj = context.object
     amt = amt_obj.data
-    amt.name = "MechRig"
+
+    if is_preview:
+        amt.name = "Preview_MechRig"
+        amt_obj.name = "Preview_MechRig"
+    else:
+        amt.name = "MechRig"
 
     node_to_bone = {}
 

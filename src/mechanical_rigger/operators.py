@@ -67,6 +67,46 @@ class MECH_RIG_OT_AutoRig(bpy.types.Operator):
             traceback.print_exc()
             return {'CANCELLED'}
 
+class MECH_RIG_OT_PreviewRig(bpy.types.Operator):
+    """Generates a temporary armature to visualize bone placement and size."""
+    bl_idname = "mech_rig.preview_rig"
+    bl_label = "Preview Rig"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        selected_objects = context.selected_objects
+        if not selected_objects:
+            self.report({'ERROR'}, "No objects selected.")
+            return {'CANCELLED'}
+
+        # Clean up existing preview
+        prev_obj = bpy.data.objects.get("Preview_MechRig")
+        if prev_obj:
+            bpy.data.objects.remove(prev_obj, do_unlink=True)
+
+        symmetric_origin = context.scene.mech_rig_symmetric_origin
+
+        try:
+            # Analyze but don't process meshes
+            rig_data = utils.analyze_hierarchy(selected_objects)
+
+            # Create Armature in Preview Mode
+            armature_obj = utils.create_armature(context, rig_data, symmetric_origin, is_preview=True)
+
+            # Select the preview armature
+            bpy.ops.object.select_all(action='DESELECT')
+            context.view_layer.objects.active = armature_obj
+            armature_obj.select_set(True)
+
+            self.report({'INFO'}, "Preview Generated. Adjust 'Bone Size Scale' and preview again.")
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Preview Failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+
 
 class MECH_RIG_OT_AddControls(bpy.types.Operator):
     """Apply the configured control shapes and IK constraints."""
@@ -300,7 +340,10 @@ class MECH_RIG_OT_BatchRename(bpy.types.Operator):
                     new_name = name.replace(self.text, self.replace_text)
 
             if new_name != name:
-                item.name = new_name
+                if hasattr(item, "bone"): # PoseBone
+                    item.bone.name = new_name
+                else:
+                    item.name = new_name
                 count += 1
 
         self.report({'INFO'}, f"Renamed {count} items.")
@@ -308,6 +351,7 @@ class MECH_RIG_OT_BatchRename(bpy.types.Operator):
 
 def register():
     bpy.utils.register_class(MECH_RIG_OT_ValidateHierarchy)
+    bpy.utils.register_class(MECH_RIG_OT_PreviewRig)
     bpy.utils.register_class(MECH_RIG_OT_AutoRig)
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
@@ -317,6 +361,7 @@ def register():
 
 def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_ValidateHierarchy)
+    bpy.utils.unregister_class(MECH_RIG_OT_PreviewRig)
     bpy.utils.unregister_class(MECH_RIG_OT_AutoRig)
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
