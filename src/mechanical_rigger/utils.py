@@ -390,7 +390,7 @@ def create_armature(context, rig_roots, symmetric_origin):
             z_axis = mat.col[2].xyz.normalized()
 
             # Readability: Use max dimension or scale, with minimum
-            length = max(obj.dimensions.length * 0.5, 0.2)
+            length = max(obj.dimensions.length * 0.5, 0.2) * context.scene.mech_rig_bone_size_scale
 
             final_tail = final_head + (z_axis * length)
 
@@ -508,7 +508,7 @@ def create_armature(context, rig_roots, symmetric_origin):
                     dist = vec.length
                     if dist < 0.001:
                         # Fallback
-                        length = max(obj.dimensions.length * 0.5, 0.2)
+                        length = max(obj.dimensions.length * 0.5, 0.2) * context.scene.mech_rig_bone_size_scale
                         z_axis = mat.col[2].xyz.normalized()
                         vec = z_axis * length
 
@@ -537,7 +537,7 @@ def create_armature(context, rig_roots, symmetric_origin):
                 z_axis = mat.col[2].xyz.normalized()
 
                 # Readability: Use max dimension or scale, with minimum
-                length = max(obj.dimensions.length * 0.5, 0.2)
+                length = max(obj.dimensions.length * 0.5, 0.2) * context.scene.mech_rig_bone_size_scale
 
                 final_tail = final_head + (z_axis * length)
 
@@ -686,6 +686,8 @@ def get_or_create_widget(name, type='CIRCLE'):
     else:
         widgets_col = bpy.data.collections["Widgets"]
 
+    widgets_col.hide_viewport = True
+
     for col in list(obj.users_collection):
         col.objects.unlink(obj)
     widgets_col.objects.link(obj)
@@ -815,6 +817,10 @@ def apply_controls(context, armature):
     # First pass: Set up Visuals (Color, Shape) and Identify IK needs
     for pbone in armature.pose.bones:
         settings = pbone.mech_rig_settings
+
+        # Skip IK Bones for generic shapes (They are handled in Pass 3)
+        if pbone.name.endswith("_IK"):
+            continue
 
         # Determine Color & Collection
         target_coll = coll_center

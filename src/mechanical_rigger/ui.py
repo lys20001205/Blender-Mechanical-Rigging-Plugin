@@ -47,6 +47,7 @@ class VIEW3D_PT_mech_rig_generate(bpy.types.Panel):
         scene = context.scene
 
         layout.prop(scene, "mech_rig_symmetric_origin", text="Symmetric Origin")
+        layout.prop(scene, "mech_rig_bone_size_scale", text="Bone Size Scale")
 
         row = layout.row(align=True)
         row.operator("mech_rig.validate_hierarchy", text="Validate Hierarchy", icon='CHECKMARK')
@@ -309,8 +310,15 @@ def register():
     bpy.types.Scene.mech_rig_widget_scale = bpy.props.FloatProperty(
         name="Widget Scale",
         description="Global scale factor for control widgets",
-        default=0.5,
+        default=5.0,
         min=0.1
+    )
+
+    bpy.types.Scene.mech_rig_bone_size_scale = bpy.props.FloatProperty(
+        name="Bone Size Scale",
+        description="Scale factor for generated bone length",
+        default=0.2,
+        min=0.01
     )
 
     # Register property with update callback
@@ -333,4 +341,5 @@ def unregister():
     del bpy.types.PoseBone.mech_rig_settings
     del bpy.types.Scene.mech_rig_symmetric_origin
     del bpy.types.Scene.mech_rig_widget_scale
+    del bpy.types.Scene.mech_rig_bone_size_scale
     del bpy.types.Scene.mech_rig_active_bone_index
