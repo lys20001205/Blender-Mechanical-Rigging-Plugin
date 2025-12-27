@@ -686,6 +686,8 @@ def get_or_create_widget(name, type='CIRCLE'):
     else:
         widgets_col = bpy.data.collections["Widgets"]
 
+    widgets_col.hide_viewport = True
+
     for col in list(obj.users_collection):
         col.objects.unlink(obj)
     widgets_col.objects.link(obj)
@@ -815,6 +817,10 @@ def apply_controls(context, armature):
     # First pass: Set up Visuals (Color, Shape) and Identify IK needs
     for pbone in armature.pose.bones:
         settings = pbone.mech_rig_settings
+
+        # Skip IK Bones for generic shapes (They are handled in Pass 3)
+        if pbone.name.endswith("_IK"):
+            continue
 
         # Determine Color & Collection
         target_coll = coll_center

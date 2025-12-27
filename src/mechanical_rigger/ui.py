@@ -310,7 +310,7 @@ def register():
     bpy.types.Scene.mech_rig_widget_scale = bpy.props.FloatProperty(
         name="Widget Scale",
         description="Global scale factor for control widgets",
-        default=0.5,
+        default=5.0,
         min=0.1
     )
 
