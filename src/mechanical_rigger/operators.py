@@ -35,14 +35,6 @@ class MECH_RIG_OT_AutoRig(bpy.types.Operator):
     def execute(self, context):
         selected_objects = context.selected_objects
         if not selected_objects:
-            # Check if active object is an armature
-            if context.active_object and context.active_object.type == 'ARMATURE':
-                # Use armature as selection context if possible?
-                # Actually, user should select objects to be rigged OR the rig + objects.
-                # If they select just the rig, we can't infer source objects easily unless we track them.
-                # For now, require selecting objects.
-                pass
-
             self.report({'ERROR'}, "No objects selected.")
             return {'CANCELLED'}
 
@@ -187,7 +179,7 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 processed_objs.append(new_obj)
 
             # 4. Join and Skin
-            utils.finalize_mesh_and_skin(context, processed_objs, new_rig, original_selection=None)
+            utils.finalize_mesh_and_skin(context, processed_objs, new_rig, original_selection=[])
 
             # Select Result
             bpy.ops.object.select_all(action='DESELECT')
