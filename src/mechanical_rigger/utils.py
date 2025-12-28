@@ -290,9 +290,27 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
         mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
 
         # Replace data
-        old_mesh = new_obj.data
-        new_obj.data = mesh_from_eval
-        new_obj.modifiers.clear() # Modifiers are baked now
+        # Note: If new_obj was a Curve, we cannot assign Mesh data to it directly.
+        if new_obj.type != 'MESH':
+            # Create a new Mesh Object to replace the Curve Object
+            mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
+            context.collection.objects.link(mesh_obj)
+
+            # Copy properties
+            mesh_obj.matrix_world = new_obj.matrix_world
+            mesh_obj.hide_viewport = False
+            mesh_obj.hide_render = False
+
+            # Replace reference
+            to_delete = new_obj
+            new_obj = mesh_obj
+
+            # Remove the old curve object
+            bpy.data.objects.remove(to_delete)
+        else:
+            old_mesh = new_obj.data
+            new_obj.data = mesh_from_eval
+            new_obj.modifiers.clear() # Modifiers are baked now
 
         # Handle Transforms and Constraints
         # We must clear constraints because 'transform_apply' resets the transform to identity,
@@ -489,6 +507,10 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
 
         # R-Side (Mirror)
         if node.is_mirrored_side == 'R':
+            # Pass 1: Ensure all Linked Duplicates exist first
+            # We need to guarantee presence of r_parents if they exist within the same batch
+            r_objects_map = {} # Map source_obj -> r_obj
+
             for obj in objs:
                 # Find or Create Linked Duplicate
                 r_name = f"{obj.name}_Linked_R"
@@ -523,12 +545,7 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                     for m in to_remove:
                         r_obj.modifiers.remove(m)
 
-                # Check existing parent
-                if r_obj.parent == armature_obj and r_obj.parent_type == 'BONE' and r_obj.parent_bone == bone_name:
-                    # Just ensure matrix is correct
-                    pass
-
-                # Clear parent
+                # Clear parent initially to prevent bad transforms
                 if r_obj.parent:
                     r_obj.parent = None
                     r_obj.matrix_world = target_mat
@@ -536,6 +553,26 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                 r_obj.hide_viewport = False
                 r_obj.hide_render = False
 
+                r_objects_map[obj] = r_obj
+
+            # Pass 2: Parenting Logic
+            for obj in objs:
+                r_obj = r_objects_map[obj]
+
+                # Check if this object should preserve local hierarchy (parented to another object in this group)
+                if obj.parent and obj.parent in objs:
+                    # Parent to R-counterpart instead of Bone
+                    r_parent = r_objects_map.get(obj.parent)
+                    if r_parent:
+                        # Restore Matrix (Parenting modifies local transform)
+                        current_matrix = r_obj.matrix_world.copy()
+                        r_obj.parent = r_parent
+                        r_obj.matrix_world = current_matrix
+
+                        # We specifically SKIP adding to parenting_tasks (Bone Binding)
+                        continue
+
+                # Else: Bind to Bone
                 parenting_tasks[bone_name].append(r_obj)
 
     print(f"DEBUG: Collected {len(parenting_tasks)} parenting tasks.")

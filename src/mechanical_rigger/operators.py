@@ -142,7 +142,7 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             def get_all_mesh_descendants(obj):
                 meshes = []
                 for child in obj.children:
-                    if child.type == 'MESH':
+                    if child.type in {'MESH', 'CURVE'}:
                         meshes.append(child)
                     meshes.extend(get_all_mesh_descendants(child))
                 return meshes
