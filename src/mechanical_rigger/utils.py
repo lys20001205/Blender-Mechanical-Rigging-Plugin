@@ -208,147 +208,104 @@ def analyze_hierarchy(selected_objects):
 
 # --- Step 2: Mesh Processing ---
 
-def process_meshes(context, rig_roots, symmetric_origin):
+def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
     """
-    duplicates and prepares meshes.
-    Handles 'Symmetric Origin' logic for Mirrored collections.
+    Prepares a list of meshes for baking by applying modifiers and handling mirroring.
+    Input: list of original objects (bound to the rig).
+    Output: list of new, processed mesh objects ready to be joined.
     """
     processed_objects = []
 
-    col_objects = {}
-    for obj in context.selected_objects:
-        if obj.users_collection:
-            c = obj.users_collection[0]
-            if c not in col_objects:
-                col_objects[c] = []
-            col_objects[c].append(obj)
+    # We need to distinguish between L-Side source objects (Mirrored) and R-Side generated objects (Linked)
+    # Strategy:
+    # 1. Iterate all bound objects.
+    # 2. Check if object has Mirror Modifier -> It's a Source (L/Center).
+    #    -> Action: Remove Mirror Modifier (because we have R object separate), Apply other modifiers.
+    # 3. Check if object is R-Side (Linked, Negative Scale).
+    #    -> Action: Apply Modifiers (to mesh), Apply Transform (Fix Scale), Flip Normals.
 
-    def get_all_nodes(nodes):
-        res = []
-        for n in nodes:
-            res.append(n)
-            res.extend(get_all_nodes(n.children))
-        return res
-    all_nodes = get_all_nodes(rig_roots)
+    # Avoid duplicate processing?
+    # Interactive bind creates: Object_L (w/ Mirror Mod), Object_R (Linked Dup).
+    # Both are children of the rig (Bone Parent).
+    # So `bound_objects` contains both.
 
-    processed_keys = set()
-
-    # Deselect everything before destructive operations
     bpy.ops.object.select_all(action='DESELECT')
 
-    for node in all_nodes:
-        col = node.origin_obj.users_collection[0]
-        key = (col.name, node.is_mirrored_side)
+    for obj in bound_objects:
+        # Create temp copy to work on
+        new_obj = obj.copy()
+        new_obj.data = obj.data.copy() # Make data unique to apply modifiers safely
+        context.collection.objects.link(new_obj)
 
-        if key in processed_keys:
-            continue
-        processed_keys.add(key)
+        # Handle Mirror Modifiers:
+        # If this is a source object with Mirror Modifier, we remove the mirror modifier
+        # because the R-side geometry is represented by the separate R-side object in the list.
+        # Exception: If for some reason R-side object is missing, we might want to apply it?
+        # But for reliability with the rig structure, we assume 1-to-1 object-bone mapping.
 
-        objs = col_objects.get(col, [])
+        to_remove = []
+        has_mirror_mod = False
 
-        for obj in objs:
-            has_mirror_mod = False
-            mirror_mod = None
-            for m in obj.modifiers:
-                if m.type == 'MIRROR':
-                    if symmetric_origin and m.mirror_object == symmetric_origin:
-                        has_mirror_mod = True
-                        mirror_mod = m
-                        break
+        # Check if object is part of a Mirrored collection
+        is_mirrored_collection = False
+        if obj.users_collection:
+            if "_Mirrored" in obj.users_collection[0].name:
+                is_mirrored_collection = True
 
-            # L-Side (and Center)
-            if node.is_mirrored_side == 'L' or node.is_mirrored_side is None:
-                new_obj = obj.copy()
-                new_obj.data = obj.data.copy()
-                context.collection.objects.link(new_obj)
-                new_obj.name = f"{obj.name}_rigged"
+        for m in new_obj.modifiers:
+            if m.type == 'MIRROR':
+                # Check if it's the structural mirror (using Symmetric Origin)
+                if symmetric_origin and m.mirror_object == symmetric_origin:
+                    # ONLY remove the mirror modifier if the object is in a Mirrored collection.
+                    # This implies there is a separate R-side object handling the other half.
+                    # If it is a Center object (not in _Mirrored), we want to KEEP (Apply) the mirror
+                    # so the final mesh is complete.
+                    if is_mirrored_collection:
+                        to_remove.append(m)
+                    has_mirror_mod = True
 
-                if node.is_mirrored_side == 'L' and has_mirror_mod:
-                    new_obj.modifiers.remove(new_obj.modifiers[mirror_mod.name])
+        for m in to_remove:
+            new_obj.modifiers.remove(m)
 
-                bpy.ops.object.select_all(action='DESELECT')
-                new_obj.select_set(True)
-                bpy.context.view_layer.objects.active = new_obj
+        # Apply Modifiers (bake to mesh)
+        # Use depsgraph to evaluate modifiers (Subsurf, Bevel, etc.)
+        context.view_layer.objects.active = new_obj
+        new_obj.select_set(True)
 
-                depsgraph = context.evaluated_depsgraph_get()
-                obj_eval = new_obj.evaluated_get(depsgraph)
-                mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
+        depsgraph = context.evaluated_depsgraph_get()
+        obj_eval = new_obj.evaluated_get(depsgraph)
+        mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
 
-                if new_obj.type != 'MESH':
-                    new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
-                    new_mesh_obj.matrix_world = new_obj.matrix_world
-                    context.collection.objects.link(new_mesh_obj)
-                    bpy.data.objects.remove(new_obj, do_unlink=True)
-                    new_obj = new_mesh_obj
-                else:
-                    new_obj.data = mesh_from_eval
-                    new_obj.modifiers.clear()
+        # Replace data
+        old_mesh = new_obj.data
+        new_obj.data = mesh_from_eval
+        new_obj.modifiers.clear() # Modifiers are baked now
 
-                # Automatically apply scale to the copy to ensure clean 1,1,1 scale for export
-                # This avoids users needing to apply scale on linked data.
+        # Clean up old mesh data if no users? (Blender handles this on file reload usually)
 
-                # CRITICAL: Ensure we are operating ONLY on the new copy
-                bpy.ops.object.select_all(action='DESELECT')
-                new_obj.select_set(True)
-                bpy.context.view_layer.objects.active = new_obj
+        # Apply Visual Transform (for R-side negative scale or any offset)
+        # This is critical for R-side objects which are effectively scaled -1
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-                bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        # Check determinant for R-side flip
+        # Original object world matrix determinant tells us if it was mirrored
+        det = obj.matrix_world.determinant()
+        if det < 0:
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.mesh.flip_normals()
+            bpy.ops.object.mode_set(mode='OBJECT')
 
-                new_obj['mech_bone_name'] = node.name
-                processed_objects.append(new_obj)
+        # Recover Bone Name
+        if obj.parent_type == 'BONE' and obj.parent_bone:
+             new_obj['mech_bone_name'] = obj.parent_bone
 
-            # R-Side
-            if node.is_mirrored_side == 'R':
-                if has_mirror_mod:
-                    new_obj = obj.copy()
-                    new_obj.data = obj.data.copy()
-                    context.collection.objects.link(new_obj)
-                    new_obj.name = f"{obj.name}_R_rigged"
-
-                    new_obj.modifiers.remove(new_obj.modifiers[mirror_mod.name])
-
-                    bpy.ops.object.select_all(action='DESELECT')
-                    new_obj.select_set(True)
-                    bpy.context.view_layer.objects.active = new_obj
-
-                    depsgraph = context.evaluated_depsgraph_get()
-                    obj_eval = new_obj.evaluated_get(depsgraph)
-                    mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
-
-                    if new_obj.type != 'MESH':
-                        new_mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
-                        new_mesh_obj.matrix_world = new_obj.matrix_world
-                        context.collection.objects.link(new_mesh_obj)
-                        bpy.data.objects.remove(new_obj, do_unlink=True)
-                        new_obj = new_mesh_obj
-                        bpy.ops.object.select_all(action='DESELECT')
-                        new_obj.select_set(True)
-                        bpy.context.view_layer.objects.active = new_obj
-                    else:
-                        new_obj.data = mesh_from_eval
-                        new_obj.modifiers.clear()
-
-                    origin_matrix = symmetric_origin.matrix_world
-                    mat_world = new_obj.matrix_world
-                    mat_local = origin_matrix.inverted() @ mat_world
-
-                    mirror_mat = mathutils.Matrix.Scale(-1, 4, (1, 0, 0))
-                    mat_local_mirrored = mirror_mat @ mat_local
-
-                    new_obj.matrix_world = origin_matrix @ mat_local_mirrored
-                    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-
-                    bpy.ops.object.mode_set(mode='EDIT')
-                    bpy.ops.mesh.select_all(action='SELECT')
-                    bpy.ops.mesh.flip_normals()
-                    bpy.ops.object.mode_set(mode='OBJECT')
-
-                    new_obj['mech_bone_name'] = node.name
-                    processed_objects.append(new_obj)
+        processed_objects.append(new_obj)
+        new_obj.select_set(False)
 
     return processed_objects
 
-def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin):
+def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin, mesh_selection=None):
     """
     Parents objects to bones using operators to ensure reliability.
     Creates linked duplicates for mirrored sides.
@@ -382,7 +339,9 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
 
     # Re-map: Collection -> Objects
     col_objects = {}
-    for obj in context.selected_objects:
+    target_objects = mesh_selection if mesh_selection else context.selected_objects
+
+    for obj in target_objects:
         if not obj.users_collection: continue
         c = obj.users_collection[0]
         if c not in col_objects:
@@ -463,7 +422,7 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
         if node.is_mirrored_side != 'R':
             for obj in objs:
                 # Disable Mirror Modifier on Source (L)
-                if symmetric_origin:
+                if symmetric_origin and node.is_mirrored_side == 'L':
                     for m in obj.modifiers:
                         if m.type == 'MIRROR' and m.mirror_object == symmetric_origin:
                             m.show_viewport = False
@@ -643,7 +602,10 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
     def create_bones_recursive(nodes, parent_bone=None):
         for node in nodes:
-            bone = amt.edit_bones.new(node.name)
+            if node.name in amt.edit_bones:
+                bone = amt.edit_bones[node.name]
+            else:
+                bone = amt.edit_bones.new(node.name)
 
             obj = node.origin_obj
             mat = obj.matrix_world
