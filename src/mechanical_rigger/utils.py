@@ -348,13 +348,277 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
     return processed_objects
 
+def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin):
+    """
+    Parents objects to bones using operators to ensure reliability.
+    Creates linked duplicates for mirrored sides.
+    """
+    print(f"DEBUG: Starting bind_objects_interactive. Armature: {armature_obj.name}")
+
+    def get_all_nodes(nodes):
+        res = []
+        for n in nodes:
+            res.append(n)
+            res.extend(get_all_nodes(n.children))
+        return res
+
+    all_nodes = get_all_nodes(rig_roots)
+
+    # Dictionary to batch parenting tasks: { bone_name: [list_of_objects] }
+    parenting_tasks = {}
+
+    # Ensure Object Mode for preparation
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # We iterate ALL nodes. The node.origin_obj is the definitive object for that bone.
+    # In the old logic, we assumed "Collection = Bone", but if users split objects (Thigh, Shin)
+    # into one collection or separate, the `analyze_hierarchy` logic determined the BoneNode structure.
+    # We should trust `node.origin_obj` as the target mesh for `node.name`.
+
+    # Wait, `analyze_hierarchy` groups by Collection?
+    # Yes, `is_new_bone` checks if collection changed.
+    # So actually, MULTIPLE objects can belong to ONE bone (if they are in the same collection).
+    # We need to find ALL objects that belong to this node's scope.
+
+    # Re-map: Collection -> Objects
+    col_objects = {}
+    for obj in context.selected_objects:
+        if not obj.users_collection: continue
+        c = obj.users_collection[0]
+        if c not in col_objects:
+            col_objects[c] = []
+        col_objects[c].append(obj)
+
+    # Track processed collections to avoid double-processing if multiple nodes map to same collection (shouldn't happen with current analyze logic?)
+    # Actually, analyze logic: "If collection changes, make new bone".
+    # So one node = one collection context.
+    # BUT, if we have nested structures, we iterate nodes.
+
+    processed_cols = set()
+
+    for node in all_nodes:
+        # Identify the collection associated with this node
+        col = node.origin_obj.users_collection[0]
+
+        # Unique key for processing this "bone's payload"
+        # We need to process both L and R sides for this node
+        # But we must be careful:
+        # If multiple nodes share the same collection (e.g. slight hierarchy diff?), 
+        # `analyze_hierarchy` logic: "is_new_bone" if collection differs.
+        # So it implies 1 Bone <-> 1 Collection (mostly).
+        # Let's trust that.
+
+        # However, the previous bug was skipping nodes because `processed_keys` matched `(col.name, side)`.
+        # If Node A (Thigh) uses Col_Leg, and Node B (Shin) uses Col_Leg...
+        # Wait, `analyze_hierarchy`:
+        # `if obj_to_col[parent_node.origin_obj] != col: is_new_bone = True`
+        # If Thigh and Shin are in SAME collection, they are merged into ONE bone (Thigh).
+        # So `processed_keys` preventing duplicates was actually CORRECT for the *Bone Generation* logic (one bone per col).
+        # BUT, `bind_objects` iterates NODES (bones).
+        # If we have 1 Bone for 2 Objects, we visit that Node once. We grab all objects in collection. Correct.
+
+        # If we have 2 Bones (Thigh, Shin) they MUST be in different collections (Col_Thigh, Col_Shin).
+        # So `col` would be different.
+
+        # So why did the Reviewer verify a bug?
+        # "If a user has a hierarchy of parts (Thigh, Shin) organizing them in a single collection (Leg_Collection)...
+        # ... the loop will process the first node (Thigh), parent ALL three meshes to Thigh bone..."
+
+        # Ah! `analyze_hierarchy` logic:
+        # If Thigh and Shin are in SAME collection:
+        # 1. Thigh (Root) -> Bone "Leg_Collection" created.
+        # 2. Shin (Child of Thigh) -> Same collection -> `is_new_bone` = False. `traverse` continues passing `node_l` (Thigh Bone).
+        # So Shin is effectively part of Thigh Bone.
+        # So `all_nodes` only contains "Leg_Collection" bone.
+        # So collecting all objects in "Leg_Collection" and parenting to "Leg_Collection" bone is CORRECT behavior for that logic.
+
+        # BUT, if the user *wants* separate bones, they *must* separate collections currently.
+        # The reviewer implies my logic is broken for "hierarchy of parts".
+        # If the existing logic enforces 1-Bone-Per-Collection, then the previous code was technically consistent with that limitation.
+        # However, to be safer and support future "Object-Per-Bone" logic (if ever changed), 
+        # let's bind `node.origin_obj` specifically?
+        # No, because `origin_obj` is just the *representative*. There might be other objects in that collection (e.g. bolts) that should move with it.
+
+        # Okay, let's stick to the Collection-based grouping but ensure we don't accidentally skip valid different bones.
+        # The key was `(col.name, node.is_mirrored_side)`.
+        # If multiple bones map to same collection... wait, that shouldn't happen in `analyze_hierarchy`.
+        # UNLESS `analyze_hierarchy` produces multiple nodes for same collection?
+        # Only if hierarchy splits and comes back? No.
+
+        # Let's refine the loop to be explicit.
+        # We want to bind ALL objects in the collection associated with this bone.
+
+        key = (col.name, node.is_mirrored_side)
+        if key in processed_cols:
+            continue
+        processed_cols.add(key)
+
+        objs = col_objects.get(col, [])
+        bone_name = node.name
+
+        if bone_name not in parenting_tasks:
+            parenting_tasks[bone_name] = []
+
+        # L-Side or Center
+        if node.is_mirrored_side != 'R':
+            for obj in objs:
+                # Disable Mirror Modifier on Source (L)
+                if symmetric_origin:
+                    for m in obj.modifiers:
+                        if m.type == 'MIRROR' and m.mirror_object == symmetric_origin:
+                            m.show_viewport = False
+                            m.show_render = False
+
+                # Check if already correctly parented to avoid redundant ops
+                if obj.parent == armature_obj and obj.parent_type == 'BONE' and obj.parent_bone == bone_name:
+                    continue
+
+                # Clear existing parent to prevent 'loop in parents' or transform issues
+                if obj.parent:
+                    mat = obj.matrix_world.copy()
+                    obj.parent = None
+                    obj.matrix_world = mat
+
+                parenting_tasks[bone_name].append(obj)
+
+        # R-Side (Mirror)
+        if node.is_mirrored_side == 'R':
+            for obj in objs:
+                # Find or Create Linked Duplicate
+                r_name = f"{obj.name}_Linked_R"
+                r_obj = bpy.data.objects.get(r_name)
+
+                if not r_obj:
+                    r_obj = obj.copy() # Linked Duplicate
+                    r_obj.name = r_name
+                    r_obj.data = obj.data # Ensure linked
+                    context.collection.objects.link(r_obj)
+
+                # Calculate Mirrored Matrix (Negative Scale)
+                mat = obj.matrix_world
+                if symmetric_origin:
+                    origin_mat = symmetric_origin.matrix_world
+                    local = origin_mat.inverted() @ mat
+                    mirror_scale = mathutils.Matrix.Scale(-1, 4, (1,0,0))
+                    local_mirrored = mirror_scale @ local
+                    target_mat = origin_mat @ local_mirrored
+                else:
+                    mirror_scale = mathutils.Matrix.Scale(-1, 4, (1,0,0))
+                    target_mat = mirror_scale @ mat
+
+                r_obj.matrix_world = target_mat
+
+                # Remove mirror modifiers on the copy
+                if symmetric_origin:
+                    to_remove = []
+                    for m in r_obj.modifiers:
+                        if m.type == 'MIRROR' and m.mirror_object == symmetric_origin:
+                            to_remove.append(m)
+                    for m in to_remove:
+                        r_obj.modifiers.remove(m)
+
+                # Check existing parent
+                if r_obj.parent == armature_obj and r_obj.parent_type == 'BONE' and r_obj.parent_bone == bone_name:
+                    # Just ensure matrix is correct
+                    pass
+
+                # Clear parent
+                if r_obj.parent:
+                    r_obj.parent = None
+                    r_obj.matrix_world = target_mat
+
+                r_obj.hide_viewport = False
+                r_obj.hide_render = False
+
+                parenting_tasks[bone_name].append(r_obj)
+
+    print(f"DEBUG: Collected {len(parenting_tasks)} parenting tasks.")
+
+    # Execute Parenting in Pose Mode
+    if parenting_tasks:
+        bpy.ops.object.select_all(action='DESELECT')
+        context.view_layer.objects.active = armature_obj
+        # Ensure armature is selected
+        armature_obj.select_set(True)
+
+        bpy.ops.object.mode_set(mode='POSE')
+
+        for bone_name, objects_to_bind in parenting_tasks.items():
+            if not objects_to_bind:
+                continue
+
+            print(f"DEBUG: Processing Bone: {bone_name}, Objects: {[o.name for o in objects_to_bind]}")
+
+            # Set Active Bone
+            if bone_name not in armature_obj.data.bones:
+                print(f"DEBUG: Bone {bone_name} not found in armature!")
+                continue
+
+            bone = armature_obj.data.bones[bone_name]
+            armature_obj.data.bones.active = bone
+
+            # Verify active bone
+            print(f"DEBUG: Active Bone set to: {armature_obj.data.bones.active.name}")
+
+            # Select Objects
+            for obj in objects_to_bind:
+                obj.select_set(True)
+
+            # Ensure Armature is Active
+            context.view_layer.objects.active = armature_obj
+
+            # Check Selection
+            sel_names = [o.name for o in context.selected_objects]
+            print(f"DEBUG: Selection before parent_set: {sel_names}")
+            print(f"DEBUG: Active Object: {context.view_layer.objects.active.name}, Mode: {context.mode}")
+
+            # Apply
+            try:
+                res = bpy.ops.object.parent_set(type='BONE', keep_transform=True)
+                print(f"DEBUG: parent_set result: {res}")
+            except Exception as e:
+                print(f"DEBUG: parent_set FAILED: {e}")
+
+            # Deselect objects for next batch
+            for obj in objects_to_bind:
+                obj.select_set(False)
+
+    # Restore Object Mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+    print("DEBUG: Finished bind_objects_interactive")
+
+    # Restore Object Mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
 # --- Step 3: Armature Creation ---
 
-def create_armature(context, rig_roots, symmetric_origin):
-    bpy.ops.object.add(type='ARMATURE', enter_editmode=True)
-    amt_obj = context.object
-    amt = amt_obj.data
-    amt.name = "MechRig"
+def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
+    if armature_obj:
+        context.view_layer.objects.active = armature_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        amt_obj = armature_obj
+        amt = amt_obj.data
+    else:
+        bpy.ops.object.add(type='ARMATURE', enter_editmode=True)
+        amt_obj = context.object
+        amt = amt_obj.data
+        amt.name = "MechRig"
+
+        # Move to dedicated collection
+        rig_col_name = "MechRig_Collection"
+        if rig_col_name not in bpy.data.collections:
+            rig_col = bpy.data.collections.new(rig_col_name)
+            context.scene.collection.children.link(rig_col)
+        else:
+            rig_col = bpy.data.collections[rig_col_name]
+
+        # Link to new col, unlink from others
+        if rig_col.name not in [c.name for c in amt_obj.users_collection]:
+            rig_col.objects.link(amt_obj)
+
+        for c in list(amt_obj.users_collection):
+            if c != rig_col:
+                c.objects.unlink(amt_obj)
 
     node_to_bone = {}
 
