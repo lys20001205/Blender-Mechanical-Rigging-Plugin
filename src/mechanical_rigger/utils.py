@@ -297,8 +297,20 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
             bpy.ops.object.mode_set(mode='OBJECT')
 
         # Recover Bone Name
+        # If object is not directly parented to bone (child of another mesh), search up hierarchy
+        bone_name = None
         if obj.parent_type == 'BONE' and obj.parent_bone:
-             new_obj['mech_bone_name'] = obj.parent_bone
+            bone_name = obj.parent_bone
+        elif obj.parent:
+            curr = obj.parent
+            while curr:
+                if curr.parent_type == 'BONE' and curr.parent_bone:
+                    bone_name = curr.parent_bone
+                    break
+                curr = curr.parent
+
+        if bone_name:
+             new_obj['mech_bone_name'] = bone_name
 
         processed_objects.append(new_obj)
         new_obj.select_set(False)
@@ -428,11 +440,18 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                             m.show_viewport = False
                             m.show_render = False
 
+                # Check if this object is a "Root" in this collection context.
+                # If its parent is ALSO in this list of objects to bind, we skip parenting it to the bone.
+                # This preserves the local hierarchy (e.g. Hinge -> Piston) while binding the Hinge to the bone.
+                if obj.parent and obj.parent in objs:
+                    continue
+
                 # Check if already correctly parented to avoid redundant ops
                 if obj.parent == armature_obj and obj.parent_type == 'BONE' and obj.parent_bone == bone_name:
                     continue
 
                 # Clear existing parent to prevent 'loop in parents' or transform issues
+                # Note: We only clear parent if we are about to reparent it to the bone.
                 if obj.parent:
                     mat = obj.matrix_world.copy()
                     obj.parent = None
@@ -847,7 +866,10 @@ def finalize_mesh_and_skin(context, processed_objects, armature, original_select
     combined_mesh.name = "Rigged_Mesh"
     combined_mesh.display_type = 'SOLID'
 
+    # Set parent with inverse matrix to prevent offset if armature is not at origin
     combined_mesh.parent = armature
+    combined_mesh.matrix_parent_inverse = armature.matrix_world.inverted()
+
     mod = combined_mesh.modifiers.new(name="Armature", type='ARMATURE')
     mod.object = armature
 

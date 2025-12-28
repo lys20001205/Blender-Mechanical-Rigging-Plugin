@@ -136,10 +136,18 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
 
             # 2. Collect bound objects
             # Interactive bind uses BONE parenting.
-            bound_objects = []
-            for child in rig.children:
-                if child.type == 'MESH':
-                    bound_objects.append(child)
+            # We must collect ALL descendant meshes, not just direct children,
+            # because some might be parented to other meshes (hierarchy preservation).
+
+            def get_all_mesh_descendants(obj):
+                meshes = []
+                for child in obj.children:
+                    if child.type == 'MESH':
+                        meshes.append(child)
+                    meshes.extend(get_all_mesh_descendants(child))
+                return meshes
+
+            bound_objects = get_all_mesh_descendants(rig)
 
             if not bound_objects:
                 self.report({'WARNING'}, "No bound meshes found.")
