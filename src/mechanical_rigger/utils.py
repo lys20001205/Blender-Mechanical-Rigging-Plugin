@@ -267,6 +267,13 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
         for m in to_remove:
             new_obj.modifiers.remove(m)
 
+        # Mute Armature Modifiers to prevent double-skinning or baking deformation
+        # We want the 'Rest Pose' static mesh.
+        for m in new_obj.modifiers:
+            if m.type == 'ARMATURE':
+                m.show_viewport = False
+                m.show_render = False
+
         # Apply Modifiers (bake to mesh)
         # Use depsgraph to evaluate modifiers (Subsurf, Bevel, etc.)
         context.view_layer.objects.active = new_obj
@@ -281,10 +288,22 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
         new_obj.data = mesh_from_eval
         new_obj.modifiers.clear() # Modifiers are baked now
 
-        # Clean up old mesh data if no users? (Blender handles this on file reload usually)
+        # Handle Transforms and Constraints
+        # We must clear constraints because 'transform_apply' resets the transform to identity,
+        # but if a constraint remains, it might re-apply rotation/location on the next update,
+        # causing the mesh to be double-transformed or offset.
 
-        # Apply Visual Transform (for R-side negative scale or any offset)
-        # This is critical for R-side objects which are effectively scaled -1
+        # 1. Store the visual world matrix (what we see)
+        visual_matrix = new_obj.matrix_world.copy()
+
+        # 2. Clear constraints
+        new_obj.constraints.clear()
+
+        # 3. Force the object to exist at that visual transform without constraints
+        new_obj.matrix_world = visual_matrix
+
+        # 4. Apply Visual Transform (Bake Matrix into Mesh Vertices)
+        # This makes the Object Transform (0,0,0) and Scale (1,1,1)
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
         # Check determinant for R-side flip
