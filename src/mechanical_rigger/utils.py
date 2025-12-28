@@ -237,6 +237,10 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
         new_obj.data = obj.data.copy() # Make data unique to apply modifiers safely
         context.collection.objects.link(new_obj)
 
+        # Ensure object is visible for operators to work
+        new_obj.hide_viewport = False
+        new_obj.hide_render = False
+
         # Handle Mirror Modifiers:
         # If this is a source object with Mirror Modifier, we remove the mirror modifier
         # because the R-side geometry is represented by the separate R-side object in the list.
