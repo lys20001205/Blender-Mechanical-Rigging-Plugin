@@ -232,10 +232,16 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
     bpy.ops.object.select_all(action='DESELECT')
 
     for obj in bound_objects:
+        if obj.hide_render:
+            continue
+
         # Create temp copy to work on
         new_obj = obj.copy()
         new_obj.data = obj.data.copy() # Make data unique to apply modifiers safely
         context.collection.objects.link(new_obj)
+
+        new_obj.hide_viewport = False
+        new_obj.hide_render = False
 
         # Handle Mirror Modifiers:
         # If this is a source object with Mirror Modifier, we remove the mirror modifier
@@ -299,10 +305,13 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
         # 2. Clear constraints
         new_obj.constraints.clear()
 
-        # 3. Force the object to exist at that visual transform without constraints
+        # 3. Unparent to ensure we are baking World Transform, not Local-to-Parent
+        new_obj.parent = None
+
+        # 4. Force the object to exist at that visual transform without constraints
         new_obj.matrix_world = visual_matrix
 
-        # 4. Apply Visual Transform (Bake Matrix into Mesh Vertices)
+        # 5. Apply Visual Transform (Bake Matrix into Mesh Vertices)
         # This makes the Object Transform (0,0,0) and Scale (1,1,1)
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
