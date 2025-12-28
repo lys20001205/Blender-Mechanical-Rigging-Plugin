@@ -392,7 +392,14 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
                             m.show_render = False
 
                 # Parent to Bone
+                # Force update if parent or bone is different
                 if obj.parent != armature_obj or obj.parent_bone != bone_name:
+                    # Clear parent first to ensure clean state (keep transform)
+                    if obj.parent:
+                        obj_mat = obj.matrix_world.copy()
+                        obj.parent = None
+                        obj.matrix_world = obj_mat
+
                     obj_mat = obj.matrix_world.copy() # Preserve World Transform
                     obj.parent = armature_obj
                     obj.parent_type = 'BONE'
@@ -458,6 +465,22 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
         amt_obj = context.object
         amt = amt_obj.data
         amt.name = "MechRig"
+
+        # Move to dedicated collection
+        rig_col_name = "MechRig_Collection"
+        if rig_col_name not in bpy.data.collections:
+            rig_col = bpy.data.collections.new(rig_col_name)
+            context.scene.collection.children.link(rig_col)
+        else:
+            rig_col = bpy.data.collections[rig_col_name]
+
+        # Link to new col, unlink from others
+        if rig_col.name not in [c.name for c in amt_obj.users_collection]:
+            rig_col.objects.link(amt_obj)
+
+        for c in list(amt_obj.users_collection):
+            if c != rig_col:
+                c.objects.unlink(amt_obj)
 
     node_to_bone = {}
 
