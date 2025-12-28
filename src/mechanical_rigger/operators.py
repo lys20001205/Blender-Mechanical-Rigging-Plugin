@@ -29,17 +29,24 @@ class MECH_RIG_OT_ValidateHierarchy(bpy.types.Operator):
 class MECH_RIG_OT_AutoRig(bpy.types.Operator):
     """Detects hierarchy, handles collections, mirroring, and generates a rigid mechanical rig."""
     bl_idname = "mech_rig.auto_rig"
-    bl_label = "Auto Rig Hierarchy"
+    bl_label = "Build / Update Rig"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         selected_objects = context.selected_objects
         if not selected_objects:
+            # Check if active object is an armature
+            if context.active_object and context.active_object.type == 'ARMATURE':
+                # Use armature as selection context if possible?
+                # Actually, user should select objects to be rigged OR the rig + objects.
+                # If they select just the rig, we can't infer source objects easily unless we track them.
+                # For now, require selecting objects.
+                pass
+
             self.report({'ERROR'}, "No objects selected.")
             return {'CANCELLED'}
 
-        # Optional: Run validation automatically?
-        # Let's run it and fail if error.
+        # Validation
         errors = utils.validate_selection(context)
         if errors:
             self.report({'ERROR'}, "Validation Failed. Run 'Validate Hierarchy' for details.")
@@ -48,21 +55,150 @@ class MECH_RIG_OT_AutoRig(bpy.types.Operator):
         symmetric_origin = context.scene.mech_rig_symmetric_origin
 
         try:
-            rig_data = utils.analyze_hierarchy(selected_objects)
-            processed_objects = utils.process_meshes(context, rig_data, symmetric_origin)
-            armature_obj = utils.create_armature(context, rig_data, symmetric_origin)
-            utils.finalize_mesh_and_skin(context, processed_objects, armature_obj, selected_objects)
+            # Check if we are updating an existing rig in the selection
+            existing_armature = None
+            mesh_selection = []
 
-            # Select the new armature to show UI
+            for obj in selected_objects:
+                if obj.type == 'ARMATURE':
+                    existing_armature = obj
+                else:
+                    mesh_selection.append(obj)
+
+            # If the user selected only the rig, we can't do much unless we know the objects.
+            # But the user might be adding NEW objects.
+            # The analyze_hierarchy expects a list of objects to build the tree.
+            # If we include the armature in analyze_hierarchy, it might choke because it expects parent-child
+            # relationships of the *source objects*, not the rig.
+
+            # Strategy: Pass only Mesh objects to analyze_hierarchy.
+            if not mesh_selection:
+                 # If no meshes selected, maybe user just wants to re-process attached meshes?
+                 # Too complex for now. Assume user selects Rig + New/Old Meshes.
+                 if not existing_armature:
+                     self.report({'ERROR'}, "No meshes selected to rig.")
+                     return {'CANCELLED'}
+                 # If only Rig selected, warn?
+                 # But if user selected Rig + New Mesh, mesh_selection is not empty.
+
+            # 1. Analyze (Pass only meshes)
+            if mesh_selection:
+                rig_data = utils.analyze_hierarchy(mesh_selection)
+            else:
+                # If only armature selected, we can't rebuild hierarchy from nothing.
+                self.report({'ERROR'}, "Please select the objects to rig (along with the Armature if updating).")
+                return {'CANCELLED'}
+
+            # 2. Update/Create Armature
+            armature_obj = utils.create_armature(context, rig_data, symmetric_origin, armature_obj=existing_armature)
+
+            # 3. Interactive Binding (Non-Destructive)
+            utils.bind_objects_interactive(context, rig_data, armature_obj, symmetric_origin)
+
+            # Select the armature
             bpy.ops.object.select_all(action='DESELECT')
             context.view_layer.objects.active = armature_obj
             armature_obj.select_set(True)
+            bpy.ops.object.mode_set(mode='POSE') # Ready for controls
 
-            self.report({'INFO'}, "Rigging Complete! Configure controls in panel.")
+            self.report({'INFO'}, "Rig Updated! (Interactive Mode)")
             return {'FINISHED'}
 
         except Exception as e:
             self.report({'ERROR'}, f"Rigging Failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+
+class MECH_RIG_OT_BakeRig(bpy.types.Operator):
+    """Combines meshes and rig into a single skinned mesh for export."""
+    bl_idname = "mech_rig.bake_rig"
+    bl_label = "Bake for Export"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        rig = context.active_object
+        if not rig or rig.type != 'ARMATURE':
+            self.report({'ERROR'}, "Please select the Rig to bake.")
+            return {'CANCELLED'}
+
+        try:
+            # 1. Duplicate Rig
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.object.select_all(action='DESELECT')
+            rig.select_set(True)
+            bpy.ops.object.duplicate()
+            new_rig = context.active_object
+            new_rig.name = f"{rig.name}_Export"
+
+            # 2. Collect bound objects
+            # Interactive bind uses BONE parenting.
+            bound_objects = []
+            for child in rig.children:
+                if child.type == 'MESH':
+                    bound_objects.append(child)
+
+            if not bound_objects:
+                self.report({'WARNING'}, "No bound meshes found.")
+                return {'CANCELLED'}
+
+            # 3. Process Objects (Duplicate, Apply Transforms, Handle Mirroring)
+            processed_objs = []
+
+            for obj in bound_objects:
+                # Duplicate
+                new_obj = obj.copy()
+                new_obj.data = obj.data.copy() # Make data unique (realize linked duplicates)
+                context.collection.objects.link(new_obj)
+
+                # Re-parent to new rig temporarily to keep hierarchy logic?
+                # Or just clear parent, apply transform, then re-skin?
+                # Best approach:
+                # 1. Unparent with Keep Transform
+                # 2. Apply Visual Transform (This bakes the negative scale of mirrored objects)
+                # 3. Join
+                # 4. Bind to new Rig via Vertex Groups (names match bones)
+
+                new_obj.parent = None
+                new_obj.matrix_world = obj.matrix_world # Ensure position is matches visual
+
+                # Select only this object
+                bpy.ops.object.select_all(action='DESELECT')
+                new_obj.select_set(True)
+                context.view_layer.objects.active = new_obj
+
+                # Apply Visual Transform (Bakes mirroring)
+                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+                # Flip Normals if it was mirrored (Negative Scale)
+                # Check original scale determinant? We just applied it.
+                # If determinant of world matrix was negative...
+                det = obj.matrix_world.determinant()
+                if det < 0:
+                     bpy.ops.object.mode_set(mode='EDIT')
+                     bpy.ops.mesh.select_all(action='SELECT')
+                     bpy.ops.mesh.flip_normals()
+                     bpy.ops.object.mode_set(mode='OBJECT')
+
+                # Store Bone Name for Vertex Group
+                if obj.parent_bone:
+                    new_obj['mech_bone_name'] = obj.parent_bone
+
+                processed_objs.append(new_obj)
+
+            # 4. Join and Skin
+            utils.finalize_mesh_and_skin(context, processed_objs, new_rig, original_selection=None)
+
+            # Select Result
+            bpy.ops.object.select_all(action='DESELECT')
+            new_rig.select_set(True)
+            context.view_layer.objects.active = new_rig
+
+            self.report({'INFO'}, "Bake Complete! Ready to Export.")
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Bake Failed: {str(e)}")
             import traceback
             traceback.print_exc()
             return {'CANCELLED'}
@@ -259,6 +395,7 @@ class MECH_RIG_OT_ReloadAddon(bpy.types.Operator):
 def register():
     bpy.utils.register_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.register_class(MECH_RIG_OT_AutoRig)
+    bpy.utils.register_class(MECH_RIG_OT_BakeRig)
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.register_class(MECH_RIG_OT_ApplyWidgetTransform)
@@ -267,6 +404,7 @@ def register():
 def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.unregister_class(MECH_RIG_OT_AutoRig)
+    bpy.utils.unregister_class(MECH_RIG_OT_BakeRig)
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.unregister_class(MECH_RIG_OT_ApplyWidgetTransform)

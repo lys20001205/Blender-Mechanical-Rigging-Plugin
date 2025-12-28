@@ -348,13 +348,116 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
     return processed_objects
 
+def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin):
+    """
+    Parents objects to bones. Creates linked duplicates for mirrored sides.
+    """
+    def get_all_nodes(nodes):
+        res = []
+        for n in nodes:
+            res.append(n)
+            res.extend(get_all_nodes(n.children))
+        return res
+
+    all_nodes = get_all_nodes(rig_roots)
+
+    # Map Collection -> Objects
+    col_objects = {}
+    for obj in context.selected_objects:
+        for col in obj.users_collection:
+             if col not in col_objects:
+                 col_objects[col] = []
+             col_objects[col].append(obj)
+
+    processed_keys = set()
+
+    for node in all_nodes:
+        col = node.origin_obj.users_collection[0]
+        key = (col.name, node.is_mirrored_side)
+
+        if key in processed_keys: continue
+        processed_keys.add(key)
+
+        objs = col_objects.get(col, [])
+        bone_name = node.name
+
+        # L-Side or Center
+        if node.is_mirrored_side != 'R':
+            for obj in objs:
+                # Disable Mirror Modifier on Source (L) to prevent ghosting
+                if symmetric_origin:
+                    for m in obj.modifiers:
+                        if m.type == 'MIRROR' and m.mirror_object == symmetric_origin:
+                            m.show_viewport = False
+                            m.show_render = False
+
+                # Parent to Bone
+                if obj.parent != armature_obj or obj.parent_bone != bone_name:
+                    obj_mat = obj.matrix_world.copy() # Preserve World Transform
+                    obj.parent = armature_obj
+                    obj.parent_type = 'BONE'
+                    obj.parent_bone = bone_name
+                    obj.matrix_world = obj_mat
+
+        # R-Side (Mirror)
+        if node.is_mirrored_side == 'R':
+             for obj in objs:
+                 # Find or Create Linked Duplicate
+                 r_name = f"{obj.name}_Linked_R"
+                 r_obj = bpy.data.objects.get(r_name)
+
+                 if not r_obj:
+                     r_obj = obj.copy() # Linked Duplicate
+                     r_obj.name = r_name
+                     r_obj.data = obj.data # Ensure linked
+                     context.collection.objects.link(r_obj)
+
+                 # Calculate Mirrored Matrix (Negative Scale)
+                 mat = obj.matrix_world
+                 if symmetric_origin:
+                     origin_mat = symmetric_origin.matrix_world
+                     local = origin_mat.inverted() @ mat
+                     mirror_scale = mathutils.Matrix.Scale(-1, 4, (1,0,0))
+                     local_mirrored = mirror_scale @ local
+                     target_mat = origin_mat @ local_mirrored
+                 else:
+                     mirror_scale = mathutils.Matrix.Scale(-1, 4, (1,0,0))
+                     target_mat = mirror_scale @ mat
+
+                 r_obj.matrix_world = target_mat
+
+                 # Remove mirror modifiers targeting the origin on the copy
+                 if symmetric_origin:
+                     to_remove = []
+                     for m in r_obj.modifiers:
+                         if m.type == 'MIRROR' and m.mirror_object == symmetric_origin:
+                             to_remove.append(m)
+                     for m in to_remove:
+                         r_obj.modifiers.remove(m)
+
+                 # Parent
+                 r_obj.parent = armature_obj
+                 r_obj.parent_type = 'BONE'
+                 r_obj.parent_bone = bone_name
+                 r_obj.matrix_world = target_mat # Re-apply after parent
+
+                 # Ensure visible
+                 r_obj.hide_viewport = False
+                 r_obj.hide_render = False
+
 # --- Step 3: Armature Creation ---
 
-def create_armature(context, rig_roots, symmetric_origin):
-    bpy.ops.object.add(type='ARMATURE', enter_editmode=True)
-    amt_obj = context.object
-    amt = amt_obj.data
-    amt.name = "MechRig"
+def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
+    if armature_obj:
+        context.view_layer.objects.active = armature_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        amt_obj = armature_obj
+        amt = amt_obj.data
+    else:
+        bpy.ops.object.add(type='ARMATURE', enter_editmode=True)
+        amt_obj = context.object
+        amt = amt_obj.data
+        amt.name = "MechRig"
 
     node_to_bone = {}
 
