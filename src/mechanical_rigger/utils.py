@@ -350,7 +350,8 @@ def process_meshes(context, rig_roots, symmetric_origin):
 
 def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin):
     """
-    Parents objects to bones. Creates linked duplicates for mirrored sides.
+    Parents objects to bones using operators to ensure reliability.
+    Creates linked duplicates for mirrored sides.
     """
     def get_all_nodes(nodes):
         res = []
@@ -369,7 +370,13 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
                  col_objects[col] = []
              col_objects[col].append(obj)
 
+    # Dictionary to batch parenting tasks: { bone_name: [list_of_objects] }
+    parenting_tasks = {}
+
     processed_keys = set()
+
+    # Ensure Object Mode for preparation
+    bpy.ops.object.mode_set(mode='OBJECT')
 
     for node in all_nodes:
         col = node.origin_obj.users_collection[0]
@@ -381,30 +388,30 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
         objs = col_objects.get(col, [])
         bone_name = node.name
 
+        if bone_name not in parenting_tasks:
+            parenting_tasks[bone_name] = []
+
         # L-Side or Center
         if node.is_mirrored_side != 'R':
             for obj in objs:
-                # Disable Mirror Modifier on Source (L) to prevent ghosting
+                # Disable Mirror Modifier on Source (L)
                 if symmetric_origin:
                     for m in obj.modifiers:
                         if m.type == 'MIRROR' and m.mirror_object == symmetric_origin:
                             m.show_viewport = False
                             m.show_render = False
 
-                # Parent to Bone
-                # Force update if parent or bone is different
-                if obj.parent != armature_obj or obj.parent_bone != bone_name:
-                    # Clear parent first to ensure clean state (keep transform)
-                    if obj.parent:
-                        obj_mat = obj.matrix_world.copy()
-                        obj.parent = None
-                        obj.matrix_world = obj_mat
+                # Check if already correctly parented to avoid redundant ops
+                if obj.parent == armature_obj and obj.parent_type == 'BONE' and obj.parent_bone == bone_name:
+                    continue
 
-                    obj_mat = obj.matrix_world.copy() # Preserve World Transform
-                    obj.parent = armature_obj
-                    obj.parent_type = 'BONE'
-                    obj.parent_bone = bone_name
-                    obj.matrix_world = obj_mat
+                # Clear existing parent to prevent 'loop in parents' or transform issues
+                if obj.parent:
+                     mat = obj.matrix_world.copy()
+                     obj.parent = None
+                     obj.matrix_world = mat
+
+                parenting_tasks[bone_name].append(obj)
 
         # R-Side (Mirror)
         if node.is_mirrored_side == 'R':
@@ -433,7 +440,7 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
 
                  r_obj.matrix_world = target_mat
 
-                 # Remove mirror modifiers targeting the origin on the copy
+                 # Remove mirror modifiers on the copy
                  if symmetric_origin:
                      to_remove = []
                      for m in r_obj.modifiers:
@@ -442,15 +449,74 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin)
                      for m in to_remove:
                          r_obj.modifiers.remove(m)
 
-                 # Parent
-                 r_obj.parent = armature_obj
-                 r_obj.parent_type = 'BONE'
-                 r_obj.parent_bone = bone_name
-                 r_obj.matrix_world = target_mat # Re-apply after parent
+                 # Check existing parent
+                 if r_obj.parent == armature_obj and r_obj.parent_type == 'BONE' and r_obj.parent_bone == bone_name:
+                    # Just ensure matrix is correct (it might have drifted if we recalculated)
+                    # parenting_tasks logic uses keep_transform=True, so updating matrix BEFORE parenting task is key.
+                    # If already parented, we might not want to re-parent unless we force it.
+                    # Let's force it to ensure position is correct.
+                    pass
 
-                 # Ensure visible
+                 # Clear parent
+                 if r_obj.parent:
+                     r_obj.parent = None
+                     r_obj.matrix_world = target_mat
+
                  r_obj.hide_viewport = False
                  r_obj.hide_render = False
+
+                 parenting_tasks[bone_name].append(r_obj)
+
+    # Execute Parenting in Pose Mode
+    if parenting_tasks:
+        bpy.ops.object.select_all(action='DESELECT')
+        context.view_layer.objects.active = armature_obj
+        bpy.ops.object.mode_set(mode='POSE')
+
+        for bone_name, objects_to_bind in parenting_tasks.items():
+            if not objects_to_bind:
+                continue
+
+            # Set Active Bone
+            # Note: In Pose Mode, we select the bone via armature.data.bones.active
+            # But the operator uses the 'active bone'.
+            if bone_name not in armature_obj.data.bones:
+                continue
+
+            bone = armature_obj.data.bones[bone_name]
+            armature_obj.data.bones.active = bone
+
+            # Select Objects
+            # We must be in Object Mode to select objects?
+            # No, 'parent_set' works if Armature is active (in Pose Mode) and Objects are selected.
+            # But we can't select objects easily while in Pose Mode via UI, but via API:
+
+            # We need to switch context carefully.
+            # To select objects, we don't strictly need to be in Object Mode, but they must be selectable.
+
+            # Actually, standard script pattern:
+            # 1. Armature in Pose Mode.
+            # 2. Bone Active.
+            # 3. Objects Selected.
+            # 4. Operator.
+
+            # However, `obj.select_set(True)` works in any mode?
+
+            for obj in objects_to_bind:
+                obj.select_set(True)
+
+            # Ensure Armature is Active
+            context.view_layer.objects.active = armature_obj
+
+            # Apply
+            bpy.ops.object.parent_set(type='BONE', keep_transform=True)
+
+            # Deselect objects for next batch
+            for obj in objects_to_bind:
+                obj.select_set(False)
+
+    # Restore Object Mode
+    bpy.ops.object.mode_set(mode='OBJECT')
 
 # --- Step 3: Armature Creation ---
 
