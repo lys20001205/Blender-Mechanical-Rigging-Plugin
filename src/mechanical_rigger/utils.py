@@ -511,6 +511,14 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
 
         # R-Side (Mirror)
         if node.is_mirrored_side == 'R':
+            # Manage Target Collection for Linked Objects
+            target_col_name = f"{col.name}_Linked"
+            if target_col_name in bpy.data.collections:
+                target_col = bpy.data.collections[target_col_name]
+            else:
+                target_col = bpy.data.collections.new(target_col_name)
+                context.scene.collection.children.link(target_col)
+
             # Pass 1: Ensure all Linked Duplicates exist first
             # We need to guarantee presence of r_parents if they exist within the same batch
             r_objects_map = {} # Map source_obj -> r_obj
@@ -524,7 +532,14 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                     r_obj = obj.copy() # Linked Duplicate
                     r_obj.name = r_name
                     r_obj.data = obj.data # Ensure linked
-                    context.collection.objects.link(r_obj)
+                    target_col.objects.link(r_obj)
+                else:
+                    # Move to correct collection if needed
+                    if target_col not in r_obj.users_collection:
+                         target_col.objects.link(r_obj)
+                    for c in list(r_obj.users_collection):
+                        if c != target_col:
+                            c.objects.unlink(r_obj)
 
                 # Calculate Mirrored Matrix (Negative Scale)
                 mat = obj.matrix_world
