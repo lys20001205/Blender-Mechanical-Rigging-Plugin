@@ -232,6 +232,44 @@ def update_use_ik(self, context):
             mirror_pbone = obj.pose.bones[mirror_name]
             if mirror_pbone.mech_rig_settings.use_ik != new_val:
                 mirror_pbone.mech_rig_settings.use_ik = new_val
+            # Ensure chain length is synced initially too if enabling
+            if new_val:
+                 mirror_pbone.mech_rig_settings.ik_chain_length = active_pbone.mech_rig_settings.ik_chain_length
+
+
+def update_ik_chain_length(self, context):
+    """Callback to sync Chain Length to mirrored bones."""
+    obj = context.active_object
+    if not obj or obj.type != 'ARMATURE' or obj.mode != 'POSE':
+        return
+
+    active_pbone = context.active_pose_bone
+    if not active_pbone or active_pbone.mech_rig_settings != self:
+        return
+
+    new_val = self.ik_chain_length
+
+    # Apply to Mirrored Bones (Symmetry)
+    # Collect list of bones to process (Active + Selected)
+    bones_to_mirror = [p for p in context.selected_pose_bones]
+
+    for pbone in bones_to_mirror:
+        name = pbone.name
+        # Check for standard suffixes
+        mirror_name = None
+        if name.endswith("_L"):
+            mirror_name = name[:-2] + "_R"
+        elif name.endswith(".L"):
+            mirror_name = name[:-2] + ".R"
+        elif name.endswith("_R"):
+            mirror_name = name[:-2] + "_L"
+        elif name.endswith(".R"):
+            mirror_name = name[:-2] + ".L"
+
+        if mirror_name and mirror_name in obj.pose.bones:
+            mirror_pbone = obj.pose.bones[mirror_name]
+            if mirror_pbone.mech_rig_settings.ik_chain_length != new_val:
+                mirror_pbone.mech_rig_settings.ik_chain_length = new_val
 
 class MechRigBoneSettings(bpy.types.PropertyGroup):
     use_ik: bpy.props.BoolProperty(
@@ -241,7 +279,11 @@ class MechRigBoneSettings(bpy.types.PropertyGroup):
         update=update_use_ik
     )
     ik_chain_length: bpy.props.IntProperty(
-        name="Chain Length", description="Number of bones in the IK chain", default=2, min=1
+        name="Chain Length",
+        description="Number of bones in the IK chain",
+        default=2,
+        min=1,
+        update=update_ik_chain_length
     )
     control_shape: bpy.props.EnumProperty(
         items=[

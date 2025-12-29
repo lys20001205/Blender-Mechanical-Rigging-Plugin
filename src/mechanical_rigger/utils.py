@@ -1314,7 +1314,13 @@ def apply_controls(context, armature):
                     ik_bone.head = bone.tail
                     # Align IK bone similar to bone
                     ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
-                    ik_bone.parent = None
+
+                    # Parent to the bone's parent (Direct Parent) to enable FK-like behavior for IK control
+                    if bone.parent:
+                        ik_bone.parent = bone.parent
+                    else:
+                        ik_bone.parent = None
+
                     ik_bone.use_deform = False
 
     # ---------------------------------------------------------
