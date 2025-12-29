@@ -182,9 +182,63 @@ class VIEW3D_PT_mech_rig_tools(bpy.types.Panel):
 
 # --- Data Properties ---
 
+def update_use_ik(self, context):
+    """Callback to sync Use IK to selected bones and mirrored bones."""
+    # self is the PropertyGroup (MechRigBoneSettings) attached to a PoseBone
+    # We need to find the PoseBone that owns this property group.
+    # Unfortunately, PropertyGroup doesn't easily know its owner in the update callback without hacky traversal
+    # OR we rely on context.active_pose_bone (usually the one being edited).
+
+    # Check context
+    obj = context.active_object
+    if not obj or obj.type != 'ARMATURE' or obj.mode != 'POSE':
+        return
+
+    # We assume 'self' belongs to the active bone if the user is clicking in the UI
+    active_pbone = context.active_pose_bone
+    if not active_pbone or active_pbone.mech_rig_settings != self:
+        # Fallback: iterate all bones to find owner? Too slow.
+        # Ideally we trust active_pose_bone for UI interaction.
+        return
+
+    new_val = self.use_ik
+
+    # 1. Apply to Selected Bones
+    for pbone in context.selected_pose_bones:
+        if pbone != active_pbone:
+            # Prevent recursion if we are setting it here
+            if pbone.mech_rig_settings.use_ik != new_val:
+                 pbone.mech_rig_settings.use_ik = new_val
+
+    # 2. Apply to Mirrored Bones (Symmetry)
+    # Collect list of bones to process (Active + Selected)
+    bones_to_mirror = [p for p in context.selected_pose_bones]
+
+    for pbone in bones_to_mirror:
+        name = pbone.name
+
+        # Check for standard suffixes
+        mirror_name = None
+        if name.endswith("_L"):
+            mirror_name = name[:-2] + "_R"
+        elif name.endswith(".L"):
+            mirror_name = name[:-2] + ".R"
+        elif name.endswith("_R"):
+            mirror_name = name[:-2] + "_L"
+        elif name.endswith(".R"):
+            mirror_name = name[:-2] + ".L"
+
+        if mirror_name and mirror_name in obj.pose.bones:
+            mirror_pbone = obj.pose.bones[mirror_name]
+            if mirror_pbone.mech_rig_settings.use_ik != new_val:
+                mirror_pbone.mech_rig_settings.use_ik = new_val
+
 class MechRigBoneSettings(bpy.types.PropertyGroup):
     use_ik: bpy.props.BoolProperty(
-        name="Use IK", description="Create an Inverse Kinematics setup for this bone", default=False
+        name="Use IK",
+        description="Create an Inverse Kinematics setup for this bone",
+        default=False,
+        update=update_use_ik
     )
     ik_chain_length: bpy.props.IntProperty(
         name="Chain Length", description="Number of bones in the IK chain", default=2, min=1

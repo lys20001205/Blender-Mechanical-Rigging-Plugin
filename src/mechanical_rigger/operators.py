@@ -120,10 +120,16 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Save matrix_basis (local transform relative to parent) for all bones
             stored_matrices = {pb.name: pb.matrix_basis.copy() for pb in rig.pose.bones}
 
-            # Reset to Rest Pose
+            # Ensure we are in Rest Pose properly
             bpy.ops.pose.select_all(action='SELECT')
             bpy.ops.pose.transforms_clear()
             bpy.ops.pose.user_transforms_clear()
+
+            # Also force pose_position to POSE (just in case user left it in REST,
+            # though we want the data to be neutral. If it's in REST, transforms don't matter visually,
+            # but we want to ensure the POSE data itself is zeroed out for the duplicate step).
+            rig.data.pose_position = 'POSE'
+
             context.view_layer.update()
 
             # 2. Duplicate Rig
