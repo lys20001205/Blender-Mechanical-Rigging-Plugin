@@ -290,9 +290,31 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
         mesh_from_eval = bpy.data.meshes.new_from_object(obj_eval)
 
         # Replace data
-        old_mesh = new_obj.data
-        new_obj.data = mesh_from_eval
-        new_obj.modifiers.clear() # Modifiers are baked now
+        # Note: If new_obj was a Curve, we cannot assign Mesh data to it directly.
+        if new_obj.type != 'MESH':
+            # Create a new Mesh Object to replace the Curve Object
+            mesh_obj = bpy.data.objects.new(new_obj.name, mesh_from_eval)
+            context.collection.objects.link(mesh_obj)
+
+            # Copy properties
+            mesh_obj.matrix_world = new_obj.matrix_world
+            mesh_obj.hide_viewport = False
+            mesh_obj.hide_render = False
+
+            # Replace reference
+            to_delete = new_obj
+            new_obj = mesh_obj
+
+            # Remove the old curve object
+            bpy.data.objects.remove(to_delete)
+
+            # Ensure the new object is Active and Selected for subsequent ops
+            context.view_layer.objects.active = new_obj
+            new_obj.select_set(True)
+        else:
+            old_mesh = new_obj.data
+            new_obj.data = mesh_from_eval
+            new_obj.modifiers.clear() # Modifiers are baked now
 
         # Handle Transforms and Constraints
         # We must clear constraints because 'transform_apply' resets the transform to identity,
@@ -489,6 +511,18 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
 
         # R-Side (Mirror)
         if node.is_mirrored_side == 'R':
+            # Manage Target Collection for Linked Objects
+            target_col_name = f"{col.name}_Linked"
+            if target_col_name in bpy.data.collections:
+                target_col = bpy.data.collections[target_col_name]
+            else:
+                target_col = bpy.data.collections.new(target_col_name)
+                context.scene.collection.children.link(target_col)
+
+            # Pass 1: Ensure all Linked Duplicates exist first
+            # We need to guarantee presence of r_parents if they exist within the same batch
+            r_objects_map = {} # Map source_obj -> r_obj
+
             for obj in objs:
                 # Find or Create Linked Duplicate
                 r_name = f"{obj.name}_Linked_R"
@@ -498,7 +532,14 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                     r_obj = obj.copy() # Linked Duplicate
                     r_obj.name = r_name
                     r_obj.data = obj.data # Ensure linked
-                    context.collection.objects.link(r_obj)
+                    target_col.objects.link(r_obj)
+                else:
+                    # Move to correct collection if needed
+                    if target_col not in r_obj.users_collection:
+                        target_col.objects.link(r_obj)
+                    for c in list(r_obj.users_collection):
+                        if c != target_col:
+                            c.objects.unlink(r_obj)
 
                 # Calculate Mirrored Matrix (Negative Scale)
                 mat = obj.matrix_world
@@ -523,12 +564,7 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                     for m in to_remove:
                         r_obj.modifiers.remove(m)
 
-                # Check existing parent
-                if r_obj.parent == armature_obj and r_obj.parent_type == 'BONE' and r_obj.parent_bone == bone_name:
-                    # Just ensure matrix is correct
-                    pass
-
-                # Clear parent
+                # Clear parent initially to prevent bad transforms
                 if r_obj.parent:
                     r_obj.parent = None
                     r_obj.matrix_world = target_mat
@@ -536,6 +572,26 @@ def bind_objects_interactive(context, rig_roots, armature_obj, symmetric_origin,
                 r_obj.hide_viewport = False
                 r_obj.hide_render = False
 
+                r_objects_map[obj] = r_obj
+
+            # Pass 2: Parenting Logic
+            for obj in objs:
+                r_obj = r_objects_map[obj]
+
+                # Check if this object should preserve local hierarchy (parented to another object in this group)
+                if obj.parent and obj.parent in objs:
+                    # Parent to R-counterpart instead of Bone
+                    r_parent = r_objects_map.get(obj.parent)
+                    if r_parent:
+                        # Restore Matrix (Parenting modifies local transform)
+                        current_matrix = r_obj.matrix_world.copy()
+                        r_obj.parent = r_parent
+                        r_obj.matrix_world = current_matrix
+
+                        # We specifically SKIP adding to parenting_tasks (Bone Binding)
+                        continue
+
+                # Else: Bind to Bone
                 parenting_tasks[bone_name].append(r_obj)
 
     print(f"DEBUG: Collected {len(parenting_tasks)} parenting tasks.")
@@ -1258,7 +1314,30 @@ def apply_controls(context, armature):
                     ik_bone.head = bone.tail
                     # Align IK bone similar to bone
                     ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
-                    ik_bone.parent = None
+
+                    # Parent to the Chain's Parent (Ancestor) to avoid Cyclic Dependency
+                    # If Chain Length > 1, we must parent to the ancestor above the chain, not the direct parent
+                    chain_len = task['chain_length']
+                    current_parent = bone.parent
+
+                    # Traverse up (chain_len - 1) times.
+                    # We start at bone.parent because chain includes 'bone'.
+                    # Example: Tip=Shin, Len=2. Chain=[Shin, Thigh].
+                    # bone.parent = Thigh.
+                    # We need Parent of Thigh (Pelvis).
+                    # Loop range(chain_len - 1): 1 iteration.
+                    # i=0: current=Thigh -> current=Thigh.parent (Pelvis).
+
+                    for _ in range(chain_len - 1):
+                        if current_parent and current_parent.parent:
+                            current_parent = current_parent.parent
+                        else:
+                            # Reached root of armature inside the chain
+                            current_parent = None
+                            break
+
+                    ik_bone.parent = current_parent
+
                     ik_bone.use_deform = False
 
     # ---------------------------------------------------------
