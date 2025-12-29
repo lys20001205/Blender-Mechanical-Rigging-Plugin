@@ -1315,11 +1315,28 @@ def apply_controls(context, armature):
                     # Align IK bone similar to bone
                     ik_bone.tail = bone.tail + (bone.tail - bone.head).normalized() * (bone.length * 0.5)
 
-                    # Parent to the bone's parent (Direct Parent) to enable FK-like behavior for IK control
-                    if bone.parent:
-                        ik_bone.parent = bone.parent
-                    else:
-                        ik_bone.parent = None
+                    # Parent to the Chain's Parent (Ancestor) to avoid Cyclic Dependency
+                    # If Chain Length > 1, we must parent to the ancestor above the chain, not the direct parent
+                    chain_len = task['chain_length']
+                    current_parent = bone.parent
+
+                    # Traverse up (chain_len - 1) times.
+                    # We start at bone.parent because chain includes 'bone'.
+                    # Example: Tip=Shin, Len=2. Chain=[Shin, Thigh].
+                    # bone.parent = Thigh.
+                    # We need Parent of Thigh (Pelvis).
+                    # Loop range(chain_len - 1): 1 iteration.
+                    # i=0: current=Thigh -> current=Thigh.parent (Pelvis).
+
+                    for _ in range(chain_len - 1):
+                        if current_parent and current_parent.parent:
+                            current_parent = current_parent.parent
+                        else:
+                            # Reached root of armature inside the chain
+                            current_parent = None
+                            break
+
+                    ik_bone.parent = current_parent
 
                     ik_bone.use_deform = False
 
