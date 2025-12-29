@@ -307,6 +307,10 @@ def prepare_meshes_for_bake(context, bound_objects, symmetric_origin):
 
             # Remove the old curve object
             bpy.data.objects.remove(to_delete)
+
+            # Ensure the new object is Active and Selected for subsequent ops
+            context.view_layer.objects.active = new_obj
+            new_obj.select_set(True)
         else:
             old_mesh = new_obj.data
             new_obj.data = mesh_from_eval
