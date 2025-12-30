@@ -757,6 +757,7 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
     # PRE-PASS: Identify Piston Targets for Look-At Alignment
     # -------------------------------------------------------------
     piston_map = {} # Map ID -> {Cyl: node, Rod: node}
+    node_to_piston_info = {} # node -> {'pid': pid, 'ptype': ptype, 'instance_key': instance_key}
 
     # Helper to traverse tree and build map
     def collect_pistons(nodes):
@@ -784,6 +785,13 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
                     piston_map[instance_key] = {}
                 piston_map[instance_key][ptype] = node
 
+                # Optimize Lookup for later
+                node_to_piston_info[node] = {
+                    'pid': pid,
+                    'ptype': ptype,
+                    'instance_key': instance_key
+                }
+
             collect_pistons(node.children)
 
     collect_pistons(rig_roots)
@@ -804,22 +812,13 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
             # Check if Piston
             is_piston_node = False
-            # Re-check regex or lookup in map? Map is faster/cleaner if we reverse lookup?
-            # Or just do regex again.
-            col = node.origin_obj.users_collection[0]
-            col_name = col.name.replace("_Mirrored", "")
-            piston_match = re.match(r"Piston_(.+?)_(Cyl|Rod)", col_name)
+            piston_info = node_to_piston_info.get(node)
 
-            if piston_match:
+            if piston_info:
                 is_piston_node = True
-                pid = piston_match.group(1)
-                ptype = piston_match.group(2)
-
-                side_suffix = ""
-                if node.is_mirrored_side == 'L': side_suffix = "_L"
-                elif node.is_mirrored_side == 'R': side_suffix = "_R"
-
-                instance_key = f"{pid}{side_suffix}"
+                pid = piston_info['pid']
+                ptype = piston_info['ptype']
+                instance_key = piston_info['instance_key']
 
                 # Find Target
                 target_type = "Rod" if ptype == "Cyl" else "Cyl"
