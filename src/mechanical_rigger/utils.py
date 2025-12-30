@@ -823,9 +823,10 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
             # Check for Phys_Wheel exception
             is_phys_wheel = False
-            col = node.origin_obj.users_collection[0]
-            if col.name.startswith("Phys_Wheel"):
-                is_phys_wheel = True
+            for col in node.origin_obj.users_collection:
+                if col.name.startswith("Phys_Wheel"):
+                    is_phys_wheel = True
+                    break
 
             # Handle Mirroring for Vector/Tail
             if node.is_mirrored_side == 'R' and symmetric_origin:
@@ -1418,3 +1419,4 @@ def apply_controls(context, armature):
                     pbone.ik_max_z = data['max_z']
             else:
                 pbone.lock_ik_z = False
+                pbone.use_ik_limit_z = False
