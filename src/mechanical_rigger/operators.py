@@ -176,67 +176,14 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             bpy.ops.object.mode_set(mode='OBJECT')
 
             # -------------------------------------------------------------------------
-            # 2. UNREAL COORDINATE FIX (Rotate/Scale FIRST)
-            # -------------------------------------------------------------------------
-            print("Applying Unreal Transforms (Pre-Bake)...")
-
-            # MESH FIX: Rotate Mesh Z-90 explicitly as requested to fix double-rotation artifact
-            if export_mesh:
-                # Ensure only mesh is selected
-                bpy.ops.object.select_all(action='DESELECT')
-                export_mesh.select_set(True)
-                context.view_layer.objects.active = export_mesh
-
-                # Rotate -90 Z
-                bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
-                # Apply Rotation to Mesh
-                bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
-
-            # RIG FIX: Rotate Rig -90 Z, Scale 100
-            bpy.ops.object.select_all(action='DESELECT')
-            export_rig.select_set(True)
-            # Select mesh too to scale it with rig?
-            # If mesh is child, scaling rig scales mesh. Applying scale on rig applies to mesh if selected?
-            # Safer to select both for Scale Apply.
-            if export_mesh:
-                export_mesh.select_set(True)
-
-            context.view_layer.objects.active = export_rig
-
-            # 1. Rotate Rig -90 Z
-            bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
-
-            # 2. Apply Rotation (Rig)
-            # Only apply to Rig (Mesh already handled? Or does Rig rotation rotate mesh again?)
-            # If Mesh is child, Rig Rotate -> Mesh Rotate.
-            # If we Apply Rig Rotate, Mesh Inverse Parent correction usually keeps Mesh in place visually.
-            # But we want to Bake the Transform.
-            bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
-
-            # 3. Scale 100
-            bpy.ops.transform.resize(value=(100, 100, 100))
-
-            # 4. Apply Scale (Rig and Mesh)
-            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-
-            # 5. Scale 0.01 (No Apply)
-            export_rig.scale = (0.01, 0.01, 0.01)
-
-            # -------------------------------------------------------------------------
-            # 3. BAKE ANIMATION (Post-Transform)
+            # 2. BAKE ANIMATION (First, in Original Coordinates)
             # -------------------------------------------------------------------------
             # Constrain Export Rig to Control Rig
-            # Since Export Rig is now rotated, we need to ensure the constraints map correctly.
-            # Copy Transforms (World Space) effectively snaps the Export Bone (Rotated Rest)
-            # to the Original Bone (Original World).
-            # This will result in the Export Bone rotating to match the Original.
-            # This captures the animation in the original World Space.
-
             context.view_layer.objects.active = export_rig
             bpy.ops.object.mode_set(mode='POSE')
 
             for pbone in export_rig.pose.bones:
-                # Clear existing constraints (IK, limits, etc) from the duplicate
+                # Clear existing constraints
                 for c in list(pbone.constraints):
                     pbone.constraints.remove(c)
 
@@ -251,6 +198,14 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
 
             print(f"Baking frames {start} to {end}...")
 
+            # SAFETY: Duplicate the Action to avoid overwriting the original source
+            if export_rig.animation_data and export_rig.animation_data.action:
+                original_action = export_rig.animation_data.action
+                # Create a copy
+                new_action = original_action.copy()
+                new_action.name = f"Export_{original_action.name}"
+                export_rig.animation_data.action = new_action
+
             # Bake
             bpy.ops.nla.bake(
                 frame_start=start,
@@ -263,11 +218,78 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 bake_types={'POSE'}
             )
 
-            # Rename Baked Action
-            if export_rig.animation_data and export_rig.animation_data.action:
-                export_rig.animation_data.action.name = f"Export_{rig.animation_data.action.name if rig.animation_data and rig.animation_data.action else 'Action'}"
-
             bpy.ops.object.mode_set(mode='OBJECT')
+
+            # -------------------------------------------------------------------------
+            # 3. UNREAL COORDINATE FIX (Post-Bake, Explicit Unparenting)
+            # -------------------------------------------------------------------------
+            print("Applying Unreal Transforms (Post-Bake)...")
+
+            # Step A: Unparent Mesh to treat transforms independently
+            if export_mesh:
+                bpy.ops.object.select_all(action='DESELECT')
+                export_mesh.select_set(True)
+                context.view_layer.objects.active = export_mesh
+                # Clear parent, keep transformation
+                bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
+
+                # Step B: MESH FIX - Rotate -90 Z, Scale 100
+                # User requested explicit -90 Z rotation for the mesh artifact
+                bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
+                bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+                # Scale 100
+                bpy.ops.transform.resize(value=(100, 100, 100))
+                bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+            # Step C: RIG FIX - Rotate -90 Z, Scale 100
+            bpy.ops.object.select_all(action='DESELECT')
+            export_rig.select_set(True)
+            context.view_layer.objects.active = export_rig
+
+            # Rotate -90 Z
+            bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+            # Scale 100
+            bpy.ops.transform.resize(value=(100, 100, 100))
+            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+            # Step D: Reparent Mesh
+            if export_mesh:
+                bpy.ops.object.select_all(action='DESELECT')
+                export_rig.select_set(True) # Active
+                export_mesh.select_set(True) # Selected
+                context.view_layer.objects.active = export_rig
+                # Parent mesh to Rig (Object) or Armature?
+                # Bake result usually expects Mesh parented to Armature Object with modifier.
+                bpy.ops.object.parent_set(type='OBJECT', keep_transform=True)
+
+            # Step E: Final Export Scale (0.01)
+            export_rig.scale = (0.01, 0.01, 0.01)
+
+
+            # -------------------------------------------------------------------------
+            # 4. FIX ANIMATION CURVES (Scale Correction)
+            # -------------------------------------------------------------------------
+            # Applying Scale (100) to the Armature scales the Rest Pose bones.
+            # However, Location Keyframes are values (e.g., 0.5 meters).
+            # Now that the bone is 100x bigger, 0.5 meters is 1/100th the relative distance.
+            # We must multiply all Location F-Curves by 100.
+
+            if export_rig.animation_data and export_rig.animation_data.action:
+                action = export_rig.animation_data.action
+                print(f"Scaling Animation Curves for {action.name}...")
+
+                for fcurve in action.fcurves:
+                    # Check if it targets location
+                    if "location" in fcurve.data_path:
+                        for kf in fcurve.keyframe_points:
+                            kf.co[1] *= 100.0  # Scale Value (Y-axis of the curve editor)
+                            # Handle handles if Bezier?
+                            kf.handle_left[1] *= 100.0
+                            kf.handle_right[1] *= 100.0
+
 
             # Ensure Export Mesh inherits this (it should if parented)
 
