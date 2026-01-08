@@ -205,6 +205,9 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
 
             print(f"Baking frames {start} to {end}...")
 
+            # Switch to Object Mode to safely handle object selection/data clearing
+            bpy.ops.object.mode_set(mode='OBJECT')
+
             # CLEANUP: Clear animation data on Export Rig before baking
             # We want a fresh bake (FK keys only), not a mix of copied keys and new ones.
             # This also prevents overwriting the linked action if duplication linked them.
@@ -215,6 +218,9 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             bpy.ops.object.select_all(action='DESELECT')
             export_rig.select_set(True)
             context.view_layer.objects.active = export_rig
+
+            # Switch back to Pose Mode for Baking (since we bake 'POSE')
+            bpy.ops.object.mode_set(mode='POSE')
 
             # Bake
             # use_current_action=True will create a new Action if none exists
