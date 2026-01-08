@@ -54,7 +54,7 @@ class VIEW3D_PT_mech_rig_generate(bpy.types.Panel):
         row.operator("mech_rig.auto_rig", text="Build / Update Rig", icon='ARMATURE_DATA')
 
         row = layout.row(align=True)
-        row.operator("mech_rig.bake_rig", text="Bake for Export", icon='EXPORT')
+        row.operator("mech_rig.bake_rig", text="Bake & Export", icon='EXPORT')
 
 class VIEW3D_PT_mech_rig_layers(bpy.types.Panel):
     """Bone Collection Management"""

@@ -103,9 +103,9 @@ class MECH_RIG_OT_AutoRig(bpy.types.Operator):
             return {'CANCELLED'}
 
 class MECH_RIG_OT_BakeRig(bpy.types.Operator):
-    """Combines meshes and rig into a single skinned mesh for export."""
+    """Combines meshes and rig, bakes animations (IK), and applies Unreal transforms."""
     bl_idname = "mech_rig.bake_rig"
-    bl_label = "Bake for Export"
+    bl_label = "Bake & Export"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -115,36 +115,34 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            # 1. Store Pose & Reset to Rest Pose
-            bpy.ops.object.mode_set(mode='POSE')
-            # Save matrix_basis (local transform relative to parent) for all bones
-            stored_matrices = {pb.name: pb.matrix_basis.copy() for pb in rig.pose.bones}
+            print("--- Starting Bake & Export Workflow ---")
 
-            # Ensure we are in Rest Pose properly
+            # Store original pose to restore later
+            bpy.ops.object.mode_set(mode='POSE')
+            stored_matrices = {pb.name: pb.matrix_basis.copy() for pb in rig.pose.bones}
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            # -------------------------------------------------------------------------
+            # 1. CREATE EXPORT RIG & MESH (Static Geometry)
+            # -------------------------------------------------------------------------
+
+            # Reset Pose to Rest Pose temporarily for clean mesh binding
+            bpy.ops.object.mode_set(mode='POSE')
             bpy.ops.pose.select_all(action='SELECT')
             bpy.ops.pose.transforms_clear()
             bpy.ops.pose.user_transforms_clear()
-
-            # Also force pose_position to POSE (just in case user left it in REST, 
-            # though we want the data to be neutral. If it's in REST, transforms don't matter visually, 
-            # but we want to ensure the POSE data itself is zeroed out for the duplicate step).
             rig.data.pose_position = 'POSE'
-
             context.view_layer.update()
 
-            # 2. Duplicate Rig
+            # Duplicate Rig
             bpy.ops.object.mode_set(mode='OBJECT')
             bpy.ops.object.select_all(action='DESELECT')
             rig.select_set(True)
             bpy.ops.object.duplicate()
-            new_rig = context.active_object
-            new_rig.name = f"{rig.name}_Export"
+            export_rig = context.active_object
+            export_rig.name = f"{rig.name}_Export"
 
-            # 2. Collect bound objects
-            # Interactive bind uses BONE parenting.
-            # We must collect ALL descendant meshes, not just direct children, 
-            # because some might be parented to other meshes (hierarchy preservation).
-
+            # Collect and Process Meshes
             def get_all_mesh_descendants(obj):
                 meshes = []
                 for child in obj.children:
@@ -154,42 +152,179 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 return meshes
 
             bound_objects = get_all_mesh_descendants(rig)
-
-            if not bound_objects:
-                self.report({'WARNING'}, "No bound meshes found.")
-                return {'CANCELLED'}
-
-            # 3. Process Objects (Duplicate, Apply Transforms, Handle Mirroring)
-            # Use utility to ensure modifiers are baked
             symmetric_origin = context.scene.mech_rig_symmetric_origin
             processed_objs = utils.prepare_meshes_for_bake(context, bound_objects, symmetric_origin)
 
-            # 4. Join and Skin
-            utils.finalize_mesh_and_skin(context, processed_objs, new_rig, original_selection=[])
+            # Join Meshes and Parent to Export Rig
+            utils.finalize_mesh_and_skin(context, processed_objs, export_rig, original_selection=[])
 
-            # Select Result
-            bpy.ops.object.select_all(action='DESELECT')
-            new_rig.select_set(True)
-            context.view_layer.objects.active = new_rig
+            # Retrieve the combined mesh (it is now a child of export_rig)
+            export_mesh = None
+            for child in export_rig.children:
+                if child.type == 'MESH':
+                    export_mesh = child
+                    break
 
-            # 5. Restore Original Rig Pose
+            # Restore Original Rig Pose (We need it active for constraint targeting)
             bpy.ops.object.select_all(action='DESELECT')
             context.view_layer.objects.active = rig
             rig.select_set(True)
             bpy.ops.object.mode_set(mode='POSE')
-
             for name, mat in stored_matrices.items():
                 if name in rig.pose.bones:
                     rig.pose.bones[name].matrix_basis = mat
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            # -------------------------------------------------------------------------
+            # 2. BAKE ANIMATION (First, in Original Coordinates)
+            # -------------------------------------------------------------------------
+            # Constrain Export Rig to Control Rig
+            context.view_layer.objects.active = export_rig
+            bpy.ops.object.mode_set(mode='POSE')
+
+            for pbone in export_rig.pose.bones:
+                # Clear existing constraints
+                for c in list(pbone.constraints):
+                    pbone.constraints.remove(c)
+
+                # Add Copy Transforms to follow Control Rig
+                c = pbone.constraints.new('COPY_TRANSFORMS')
+                c.target = rig
+                c.subtarget = pbone.name
+
+            # Bake Action
+            # Use Active Action frame range if available
+            start = context.scene.frame_start
+            end = context.scene.frame_end
+
+            original_action = None
+            if rig.animation_data and rig.animation_data.action:
+                original_action = rig.animation_data.action
+                start = int(original_action.frame_range[0])
+                end = int(original_action.frame_range[1])
+
+            print(f"Baking frames {start} to {end}...")
+
+            # Switch to Object Mode to safely handle object selection/data clearing
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            # CLEANUP: Clear animation data on Export Rig before baking
+            # We want a fresh bake (FK keys only), not a mix of copied keys and new ones.
+            # This also prevents overwriting the linked action if duplication linked them.
+            export_rig.animation_data_clear()
+
+            # Ensure ONLY Export Rig is selected for Baking
+            # (Safety against 'original rig constraints gone' issue)
+            bpy.ops.object.select_all(action='DESELECT')
+            export_rig.select_set(True)
+            context.view_layer.objects.active = export_rig
+
+            # Switch back to Pose Mode for Baking (since we bake 'POSE')
+            bpy.ops.object.mode_set(mode='POSE')
+
+            # Bake
+            # use_current_action=True will create a new Action if none exists
+            bpy.ops.nla.bake(
+                frame_start=start,
+                frame_end=end,
+                only_selected=True, # STRICTLY only selected (Export Rig)
+                visual_keying=True,
+                clear_constraints=True,
+                use_current_action=True,
+                clean_curves=True,
+                bake_types={'POSE'}
+            )
+
+            # Name the new action
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act_name = original_action.name if original_action else "Action"
+                export_rig.animation_data.action.name = f"Export_{act_name}"
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # Re-select new rig for user convenience
-            bpy.ops.object.select_all(action='DESELECT')
-            context.view_layer.objects.active = new_rig
-            new_rig.select_set(True)
+            # -------------------------------------------------------------------------
+            # 3. UNREAL COORDINATE FIX (Post-Bake, Explicit Unparenting)
+            # -------------------------------------------------------------------------
+            print("Applying Unreal Transforms (Post-Bake)...")
 
-            self.report({'INFO'}, "Bake Complete! Ready to Export.")
+            # Step A: Unparent Mesh to treat transforms independently
+            if export_mesh:
+                bpy.ops.object.select_all(action='DESELECT')
+                export_mesh.select_set(True)
+                context.view_layer.objects.active = export_mesh
+                # Clear parent, keep transformation
+                bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
+
+                # Step B: MESH FIX - Rotate -90 Z, Scale 100
+                # User requested explicit -90 Z rotation for the mesh artifact
+                bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
+                bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+                # Scale 100
+                bpy.ops.transform.resize(value=(100, 100, 100))
+                bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+            # Step C: RIG FIX - Rotate -90 Z, Scale 100
+            bpy.ops.object.select_all(action='DESELECT')
+            export_rig.select_set(True)
+            context.view_layer.objects.active = export_rig
+
+            # Rotate -90 Z
+            bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+            # Scale 100
+            bpy.ops.transform.resize(value=(100, 100, 100))
+            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+            # Step D: Reparent Mesh
+            if export_mesh:
+                bpy.ops.object.select_all(action='DESELECT')
+                export_rig.select_set(True) # Active
+                export_mesh.select_set(True) # Selected
+                context.view_layer.objects.active = export_rig
+                # Parent mesh to Rig (Object) or Armature?
+                # Bake result usually expects Mesh parented to Armature Object with modifier.
+                bpy.ops.object.parent_set(type='OBJECT', keep_transform=True)
+
+            # Step E: Final Export Scale (0.01)
+            export_rig.scale = (0.01, 0.01, 0.01)
+
+
+            # -------------------------------------------------------------------------
+            # 4. FIX ANIMATION CURVES (Scale Correction)
+            # -------------------------------------------------------------------------
+            # Applying Scale (100) to the Armature scales the Rest Pose bones.
+            # However, Location Keyframes are values (e.g., 0.5 meters).
+            # Now that the bone is 100x bigger, 0.5 meters is 1/100th the relative distance.
+            # We must multiply all Location F-Curves by 100.
+
+            if export_rig.animation_data and export_rig.animation_data.action:
+                action = export_rig.animation_data.action
+                print(f"Scaling Animation Curves for {action.name}...")
+
+                for fcurve in action.fcurves:
+                    # Check if it targets location
+                    if "location" in fcurve.data_path:
+                        for kf in fcurve.keyframe_points:
+                            kf.co[1] *= 100.0  # Scale Value (Y-axis of the curve editor)
+                            # Handle handles if Bezier?
+                            kf.handle_left[1] *= 100.0
+                            kf.handle_right[1] *= 100.0
+
+
+            # Ensure Export Mesh inherits this (it should if parented)
+
+            # -------------------------------------------------------------------------
+            # FINALIZE
+            # -------------------------------------------------------------------------
+
+            # Select only the export rig for convenience
+            bpy.ops.object.select_all(action='DESELECT')
+            export_rig.select_set(True)
+            context.view_layer.objects.active = export_rig
+
+            self.report({'INFO'}, "Bake & Export Prep Complete!")
             return {'FINISHED'}
 
         except Exception as e:
@@ -286,142 +421,6 @@ class MECH_RIG_OT_EditWidgetTransform(bpy.types.Operator):
 
         self.report({'INFO'}, "Edit the widget transform, then click 'Apply Custom Transform'.")
         return {'FINISHED'}
-
-class MECH_RIG_OT_BakeAnimations(bpy.types.Operator):
-    """Bakes all actions from the Control Rig to a clean Export Rig."""
-    bl_idname = "mech_rig.bake_animations"
-    bl_label = "Bake Animations"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        rig = context.active_object
-        if not rig or rig.type != 'ARMATURE':
-            self.report({'ERROR'}, "Please select the Control Rig.")
-            return {'CANCELLED'}
-
-        try:
-            print("--- Starting Animation Bake ---")
-
-            # 1. Duplicate Rig (Armature Only)
-            bpy.ops.object.mode_set(mode='OBJECT')
-            bpy.ops.object.select_all(action='DESELECT')
-            rig.select_set(True)
-            bpy.ops.object.duplicate()
-            export_rig = context.active_object
-            export_rig.name = f"{rig.name}_Export_Anim"
-
-            # Remove all constraints/drivers/custom props from export rig?
-            # Ideally yes, we want a clean FK rig.
-            # But the structure must match.
-            # We can rely on 'Visual Keying' during bake to handle constraints.
-            # But we must constrain Export Rig -> Control Rig first.
-
-            # 2. Constrain Export Rig to Control Rig
-            # We add COPY_TRANSFORMS to every bone in Export Rig targeting Control Rig
-            context.view_layer.objects.active = export_rig
-            bpy.ops.object.mode_set(mode='POSE')
-
-            for pbone in export_rig.pose.bones:
-                # Clear existing constraints first (IK, etc)
-                for c in pbone.constraints:
-                    pbone.constraints.remove(c)
-
-                # Add Copy Transforms
-                c = pbone.constraints.new('COPY_TRANSFORMS')
-                c.target = rig
-                c.subtarget = pbone.name
-
-            bpy.ops.object.mode_set(mode='OBJECT')
-
-            # 3. Iterate Actions
-            actions_to_bake = []
-            if bpy.data.actions:
-                actions_to_bake = [a for a in bpy.data.actions] # Bake all?
-
-            # Filter? Maybe only those used by the rig?
-            # Hard to know. Let's bake all user actions.
-
-            # Store original action
-            original_action = rig.animation_data.action if rig.animation_data else None
-
-            # Ensure Control Rig is in Pose Mode for reliable updates?
-            # Or just Object Mode. Object mode is fine if we set Action.
-
-            for action in actions_to_bake:
-                print(f"Baking Action: {action.name}")
-
-                # Assign Action to Control Rig
-                if not rig.animation_data:
-                    rig.animation_data_create()
-                rig.animation_data.action = action
-
-                # Create New Action for Export Rig
-                export_action_name = f"Export_{action.name}"
-                if export_action_name in bpy.data.actions:
-                    bpy.data.actions.remove(bpy.data.actions[export_action_name])
-
-                # We need to assign a dummy action or ensure one is created by Bake
-                # Actually, nla.bake creates a new action on the object tracks
-
-                # Set Scene Frame Range to match Action
-                start, end = action.frame_range
-                context.scene.frame_start = int(start)
-                context.scene.frame_end = int(end)
-
-                # Select Export Rig
-                bpy.ops.object.select_all(action='DESELECT')
-                export_rig.select_set(True)
-                context.view_layer.objects.active = export_rig
-
-                # Bake!
-                # visual_keying=True: Bakes the result of the constraint
-                # clear_constraints=False: We need to keep constraint for next action? 
-                # Wait, if we clear constraints, we lose the link for the next loop!
-                # So clear_constraints=False.
-
-                bpy.ops.object.mode_set(mode='POSE')
-                bpy.ops.nla.bake(
-                    frame_start=int(start),
-                    frame_end=int(end),
-                    only_selected=False,
-                    visual_keying=True,
-                    clear_constraints=False,
-                    use_current_action=True,
-                    bake_types={'POSE'}
-                )
-
-                # Rename the generated action
-                if export_rig.animation_data and export_rig.animation_data.action:
-                    baked_action = export_rig.animation_data.action
-                    baked_action.name = export_action_name
-                    # Push to NLA stack or stash so we can bake next one?
-                    # Or just unlink it?
-                    # If we don't stash, assigning next action might lose it if no users?
-                    baked_action.use_fake_user = True
-
-                    # Unlink from rig so we don't overwrite it next loop
-                    export_rig.animation_data.action = None
-
-            # 4. Cleanup Export Rig
-            # Remove the Copy Transforms constraints
-            for pbone in export_rig.pose.bones:
-                for c in pbone.constraints:
-                    if c.type == 'COPY_TRANSFORMS':
-                        pbone.constraints.remove(c)
-
-            # Restore
-            bpy.ops.object.mode_set(mode='OBJECT')
-            if original_action:
-                rig.animation_data.action = original_action
-
-            self.report({'INFO'}, f"Baked {len(actions_to_bake)} animations to {export_rig.name}")
-            return {'FINISHED'}
-
-        except Exception as e:
-            self.report({'ERROR'}, f"Animation Bake Failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return {'CANCELLED'}
 
 class MECH_RIG_OT_ApplyWidgetTransform(bpy.types.Operator):
     """Apply the temporary object's transform to the bone's custom shape settings."""
@@ -527,7 +526,6 @@ def register():
     bpy.utils.register_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.register_class(MECH_RIG_OT_AutoRig)
     bpy.utils.register_class(MECH_RIG_OT_BakeRig)
-    bpy.utils.register_class(MECH_RIG_OT_BakeAnimations)
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.register_class(MECH_RIG_OT_ApplyWidgetTransform)
@@ -537,7 +535,6 @@ def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_ValidateHierarchy)
     bpy.utils.unregister_class(MECH_RIG_OT_AutoRig)
     bpy.utils.unregister_class(MECH_RIG_OT_BakeRig)
-    bpy.utils.unregister_class(MECH_RIG_OT_BakeAnimations)
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.unregister_class(MECH_RIG_OT_ApplyWidgetTransform)
