@@ -193,30 +193,46 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 c.subtarget = pbone.name
 
             # Bake Action
+            # Use Active Action frame range if available
             start = context.scene.frame_start
             end = context.scene.frame_end
 
+            original_action = None
+            if rig.animation_data and rig.animation_data.action:
+                original_action = rig.animation_data.action
+                start = int(original_action.frame_range[0])
+                end = int(original_action.frame_range[1])
+
             print(f"Baking frames {start} to {end}...")
 
-            # SAFETY: Duplicate the Action to avoid overwriting the original source
-            if export_rig.animation_data and export_rig.animation_data.action:
-                original_action = export_rig.animation_data.action
-                # Create a copy
-                new_action = original_action.copy()
-                new_action.name = f"Export_{original_action.name}"
-                export_rig.animation_data.action = new_action
+            # CLEANUP: Clear animation data on Export Rig before baking
+            # We want a fresh bake (FK keys only), not a mix of copied keys and new ones.
+            # This also prevents overwriting the linked action if duplication linked them.
+            export_rig.animation_data_clear()
+
+            # Ensure ONLY Export Rig is selected for Baking
+            # (Safety against 'original rig constraints gone' issue)
+            bpy.ops.object.select_all(action='DESELECT')
+            export_rig.select_set(True)
+            context.view_layer.objects.active = export_rig
 
             # Bake
+            # use_current_action=True will create a new Action if none exists
             bpy.ops.nla.bake(
                 frame_start=start,
                 frame_end=end,
-                only_selected=False,
+                only_selected=True, # STRICTLY only selected (Export Rig)
                 visual_keying=True,
                 clear_constraints=True,
                 use_current_action=True,
                 clean_curves=True,
                 bake_types={'POSE'}
             )
+
+            # Name the new action
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act_name = original_action.name if original_action else "Action"
+                export_rig.animation_data.action.name = f"Export_{act_name}"
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
