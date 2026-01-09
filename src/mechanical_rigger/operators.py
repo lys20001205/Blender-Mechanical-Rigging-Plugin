@@ -260,167 +260,34 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             bpy.ops.object.mode_set(mode='OBJECT')
 
             # -------------------------------------------------------------------------
-            # 3. UNREAL COORDINATE FIX (Post-Bake, Explicit Unparenting)
+            # 3. UNREAL COORDINATE FIX (Non-Destructive)
             # -------------------------------------------------------------------------
-            print("Applying Unreal Transforms (Post-Bake)...")
+            print("Applying Unreal Transforms (Non-Destructive)...")
 
-            # Step A: Unparent Mesh to treat transforms independently
+            # MESH FIX: Scale 100, Apply Scale. (Do NOT Rotate Mesh)
+            # The Mesh inherits rotation from the Rig.
             if export_mesh:
                 bpy.ops.object.select_all(action='DESELECT')
                 export_mesh.select_set(True)
                 context.view_layer.objects.active = export_mesh
-                # Clear parent, keep transformation
-                bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
 
-                # Step B: MESH FIX - Rotate -90 Z, Scale 100
-                # User requested explicit -90 Z rotation for the mesh artifact
-                bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
-                bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
-
-                # Scale 100
+                # Scale 100 (Unreal Units)
                 bpy.ops.transform.resize(value=(100, 100, 100))
                 bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 
-            # Step C: RIG FIX - Rotate -90 Z, Scale 100
+            # RIG FIX: Rotate Object -90Z. (Do NOT Apply Rotation)
+            # This rotates the whole hierarchy (Mesh + Bones) to X+ Forward.
+            # Animation (Y+ Local) becomes X+ Global.
+            # We use Delta Transform because standard Rotation is keyed by the Bake.
             bpy.ops.object.select_all(action='DESELECT')
             export_rig.select_set(True)
             context.view_layer.objects.active = export_rig
 
-            # Rotate -90 Z
-            bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
-            bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+            export_rig.delta_rotation_euler = (0, 0, -1.570796) # -90 degrees Z
 
-            # ROTATION FIX: Rotate Object Animation Curves by -90 Z
-            if export_rig.animation_data and export_rig.animation_data.action:
-                act = export_rig.animation_data.action
-
-                print(f"Debug: Rotating Animation Action '{act.name}'")
-
-                # Helper to find curves robustly (handle pose.bones too if they are Root Bones)
-                def get_curves(data_path_prefix):
-                    c_x = next((fc for fc in act.fcurves if fc.data_path == f"{data_path_prefix}location" and fc.array_index == 0), None)
-                    c_y = next((fc for fc in act.fcurves if fc.data_path == f"{data_path_prefix}location" and fc.array_index == 1), None)
-                    return c_x, c_y
-
-                # Identify targets to rotate
-                # 1. Object Transform (Always)
-                targets = [""]
-
-                # 2. Root Bones (Bones with no parent).
-                # The baked data is on the Object, but paths are 'pose.bones["Name"].'
-                for bone in export_rig.data.bones:
-                    if not bone.parent:
-                        targets.append(f'pose.bones["{bone.name}"].')
-
-                print(f"Debug: Rotating targets: {targets}")
-
-                for prefix in targets:
-                    # --- Location ---
-                    loc_x, loc_y = get_curves(prefix)
-
-                    if loc_x and loc_y:
-                        print(f"Debug: Rotating Location for '{prefix}'")
-                        count = min(len(loc_x.keyframe_points), len(loc_y.keyframe_points))
-                        for i in range(count):
-                            pt_x = loc_x.keyframe_points[i]
-                            pt_y = loc_y.keyframe_points[i]
-
-                            old_x = pt_x.co[1]
-                            old_y = pt_y.co[1]
-
-                            old_hl_x = pt_x.handle_left[1]
-                            old_hl_y = pt_y.handle_left[1]
-                            old_hr_x = pt_x.handle_right[1]
-                            old_hr_y = pt_y.handle_right[1]
-
-                            # Apply Rotation -90 Z (X' = Y, Y' = -X)
-                            pt_x.co[1] = old_y
-                            pt_y.co[1] = -old_x
-
-                            pt_x.handle_left[1] = old_hl_y
-                            pt_y.handle_left[1] = -old_hl_x
-
-                            pt_x.handle_right[1] = old_hr_y
-                            pt_y.handle_right[1] = -old_hr_x
-
-                        loc_x.update()
-                        loc_y.update()
-                    else:
-                        print(f"Debug: Location curves not found for '{prefix}' (X:{loc_x is not None}, Y:{loc_y is not None})")
-
-                    # --- Rotation ---
-                    # Check Mode
-                    # If prefix is empty, check Object Mode. If Bone, check Bone Mode.
-                    mode = 'QUATERNION' # Default default
-                    if prefix == "":
-                        mode = export_rig.rotation_mode
-                    else:
-                        # Extract bone name
-                        # prefix is 'pose.bones["Name"].'
-                        # A bit hacky parsing, but we know exact format
-                        try:
-                            b_name = prefix.split('"')[1]
-                            if b_name in export_rig.pose.bones:
-                                mode = export_rig.pose.bones[b_name].rotation_mode
-                        except:
-                            pass
-
-                    if mode == 'QUATERNION':
-                        rot_w = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 0), None)
-                        rot_x = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 1), None)
-                        rot_y = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 2), None)
-                        rot_z = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 3), None)
-
-                        if rot_w and rot_x and rot_y and rot_z:
-                            print(f"Debug: Rotating Quaternion for '{prefix}'")
-                            count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
-                            rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
-
-                            for i in range(count):
-                                pw = rot_w.keyframe_points[i]
-                                px = rot_x.keyframe_points[i]
-                                py = rot_y.keyframe_points[i]
-                                pz = rot_z.keyframe_points[i]
-
-                                old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
-                                new_q = rot_mat_q @ old_q
-
-                                pw.co[1] = new_q.w
-                                px.co[1] = new_q.x
-                                py.co[1] = new_q.y
-                                pz.co[1] = new_q.z
-
-                            rot_w.update()
-                            rot_x.update()
-                            rot_y.update()
-                            rot_z.update()
-
-                    elif mode == 'XYZ': # Euler XYZ
-                        # Z is index 2. Just subtract 90 deg.
-                        rot_z = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_euler" and fc.array_index == 2), None)
-                        if rot_z:
-                            print(f"Debug: Rotating Euler Z for '{prefix}'")
-                            for k in rot_z.keyframe_points:
-                                k.co[1] -= 1.570796
-                                k.handle_left[1] -= 1.570796
-                                k.handle_right[1] -= 1.570796
-                            rot_z.update()
-
-            # Scale 100
-            bpy.ops.transform.resize(value=(100, 100, 100))
-            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-
-            # Step D: Reparent Mesh
-            if export_mesh:
-                bpy.ops.object.select_all(action='DESELECT')
-                export_rig.select_set(True) # Active
-                export_mesh.select_set(True) # Selected
-                context.view_layer.objects.active = export_rig
-                # Parent mesh to Rig (Object) or Armature? 
-                # Bake result usually expects Mesh parented to Armature Object with modifier.
-                bpy.ops.object.parent_set(type='OBJECT', keep_transform=True)
-
-            # Step E: Final Export Scale (0.01)
+            # Set Final Object Scale (0.01)
+            # Mesh Data is 100x. Object is 0.01x. Net = 1.0x.
+            # Unreal imports 0.01 Scale as Unit Conversion.
             export_rig.scale = (0.01, 0.01, 0.01)
 
 
