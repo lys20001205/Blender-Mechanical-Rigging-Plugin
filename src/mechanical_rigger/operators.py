@@ -608,14 +608,13 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
             if armature.animation_data and armature.animation_data.action:
                 action = armature.animation_data.action
                 fcurves_to_remove = []
-                # Escape the bone name for data path if it has special chars?
-                # bpy.utils.escape_identifier might be needed, but usually bone names are quoted in path
-                # e.g. pose.bones["Root.001"]
-                base_path = f'pose.bones["{root_name}"]'
+
+                # Robust path matching
+                pbone_path = armature.pose.bones[root_name].path_from_id()
 
                 for fc in action.fcurves:
-                    # Simple check, might need regex if exact match required
-                    if base_path in fc.data_path:
+                    # Check if the F-Curve belongs to this bone (location, rotation, etc.)
+                    if fc.data_path.startswith(pbone_path):
                         fcurves_to_remove.append(fc)
 
                 for fc in fcurves_to_remove:
