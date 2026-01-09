@@ -294,90 +294,117 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             if export_rig.animation_data and export_rig.animation_data.action:
                 act = export_rig.animation_data.action
 
-                # --- Location ---
-                # Retrieve X and Y location curves (indices 0 and 1)
-                loc_x = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 0), None)
-                loc_y = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 1), None)
+                print(f"Debug: Rotating Animation Action '{act.name}'")
 
-                if loc_x and loc_y:
-                    # Assume synchronized keyframes (bake result). Iterate by index.
-                    # Safety: Iterate min length
-                    count = min(len(loc_x.keyframe_points), len(loc_y.keyframe_points))
+                # Helper to find curves robustly (handle pose.bones too if they are Root Bones)
+                def get_curves(data_path_prefix):
+                    c_x = next((fc for fc in act.fcurves if fc.data_path == f"{data_path_prefix}location" and fc.array_index == 0), None)
+                    c_y = next((fc for fc in act.fcurves if fc.data_path == f"{data_path_prefix}location" and fc.array_index == 1), None)
+                    return c_x, c_y
 
-                    for i in range(count):
-                        pt_x = loc_x.keyframe_points[i]
-                        pt_y = loc_y.keyframe_points[i]
+                # Identify targets to rotate
+                # 1. Object Transform (Always)
+                targets = [""]
 
-                        # Capture old values
-                        # Co = (Frame, Value)
-                        old_x = pt_x.co[1]
-                        old_y = pt_y.co[1]
+                # 2. Root Bones (Bones with no parent).
+                # The baked data is on the Object, but paths are 'pose.bones["Name"].'
+                for bone in export_rig.data.bones:
+                    if not bone.parent:
+                        targets.append(f'pose.bones["{bone.name}"].')
 
-                        old_hl_x = pt_x.handle_left[1]
-                        old_hl_y = pt_y.handle_left[1]
+                print(f"Debug: Rotating targets: {targets}")
 
-                        old_hr_x = pt_x.handle_right[1]
-                        old_hr_y = pt_y.handle_right[1]
+                for prefix in targets:
+                    # --- Location ---
+                    loc_x, loc_y = get_curves(prefix)
 
-                        # Apply Rotation -90 Z (X' = Y, Y' = -X)
-                        pt_x.co[1] = old_y
-                        pt_y.co[1] = -old_x
-
-                        pt_x.handle_left[1] = old_hl_y
-                        pt_y.handle_left[1] = -old_hl_x
-
-                        pt_x.handle_right[1] = old_hr_y
-                        pt_y.handle_right[1] = -old_hr_x
-
-                    loc_x.update()
-                    loc_y.update()
-
-                # --- Rotation ---
-                # Check Mode
-                mode = export_rig.rotation_mode
-
-                if mode == 'QUATERNION':
-                    # W, X, Y, Z indices 0, 1, 2, 3
-                    rot_w = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 0), None)
-                    rot_x = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 1), None)
-                    rot_y = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 2), None)
-                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 3), None)
-
-                    if rot_w and rot_x and rot_y and rot_z:
-                        count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
-
-                        rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
-
+                    if loc_x and loc_y:
+                        print(f"Debug: Rotating Location for '{prefix}'")
+                        count = min(len(loc_x.keyframe_points), len(loc_y.keyframe_points))
                         for i in range(count):
-                            pw = rot_w.keyframe_points[i]
-                            px = rot_x.keyframe_points[i]
-                            py = rot_y.keyframe_points[i]
-                            pz = rot_z.keyframe_points[i]
+                            pt_x = loc_x.keyframe_points[i]
+                            pt_y = loc_y.keyframe_points[i]
 
-                            old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
-                            new_q = rot_mat_q @ old_q
+                            old_x = pt_x.co[1]
+                            old_y = pt_y.co[1]
 
-                            pw.co[1] = new_q.w
-                            px.co[1] = new_q.x
-                            py.co[1] = new_q.y
-                            pz.co[1] = new_q.z
+                            old_hl_x = pt_x.handle_left[1]
+                            old_hl_y = pt_y.handle_left[1]
+                            old_hr_x = pt_x.handle_right[1]
+                            old_hr_y = pt_y.handle_right[1]
 
-                            # Handles ignored for Quats (complex), but dense bake makes them irrelevant usually.
+                            # Apply Rotation -90 Z (X' = Y, Y' = -X)
+                            pt_x.co[1] = old_y
+                            pt_y.co[1] = -old_x
 
-                        rot_w.update()
-                        rot_x.update()
-                        rot_y.update()
-                        rot_z.update()
+                            pt_x.handle_left[1] = old_hl_y
+                            pt_y.handle_left[1] = -old_hl_x
 
-                elif mode == 'XYZ': # Euler XYZ
-                    # Z is index 2. Just subtract 90 deg.
-                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
-                    if rot_z:
-                        for k in rot_z.keyframe_points:
-                            k.co[1] -= 1.570796
-                            k.handle_left[1] -= 1.570796
-                            k.handle_right[1] -= 1.570796
-                        rot_z.update()
+                            pt_x.handle_right[1] = old_hr_y
+                            pt_y.handle_right[1] = -old_hr_x
+
+                        loc_x.update()
+                        loc_y.update()
+                    else:
+                        print(f"Debug: Location curves not found for '{prefix}' (X:{loc_x is not None}, Y:{loc_y is not None})")
+
+                    # --- Rotation ---
+                    # Check Mode
+                    # If prefix is empty, check Object Mode. If Bone, check Bone Mode.
+                    mode = 'QUATERNION' # Default default
+                    if prefix == "":
+                        mode = export_rig.rotation_mode
+                    else:
+                        # Extract bone name
+                        # prefix is 'pose.bones["Name"].'
+                        # A bit hacky parsing, but we know exact format
+                        try:
+                            b_name = prefix.split('"')[1]
+                            if b_name in export_rig.pose.bones:
+                                mode = export_rig.pose.bones[b_name].rotation_mode
+                        except:
+                            pass
+
+                    if mode == 'QUATERNION':
+                        rot_w = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 0), None)
+                        rot_x = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 1), None)
+                        rot_y = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 2), None)
+                        rot_z = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_quaternion" and fc.array_index == 3), None)
+
+                        if rot_w and rot_x and rot_y and rot_z:
+                            print(f"Debug: Rotating Quaternion for '{prefix}'")
+                            count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
+                            rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
+
+                            for i in range(count):
+                                pw = rot_w.keyframe_points[i]
+                                px = rot_x.keyframe_points[i]
+                                py = rot_y.keyframe_points[i]
+                                pz = rot_z.keyframe_points[i]
+
+                                old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
+                                new_q = rot_mat_q @ old_q
+
+                                pw.co[1] = new_q.w
+                                px.co[1] = new_q.x
+                                py.co[1] = new_q.y
+                                pz.co[1] = new_q.z
+
+                            rot_w.update()
+                            rot_x.update()
+                            rot_y.update()
+                            rot_z.update()
+
+                    elif mode == 'XYZ': # Euler XYZ
+                        # Z is index 2. Just subtract 90 deg.
+                        rot_z = next((fc for fc in act.fcurves if fc.data_path == f"{prefix}rotation_euler" and fc.array_index == 2), None)
+                        if rot_z:
+                            print(f"Debug: Rotating Euler Z for '{prefix}'")
+                            for k in rot_z.keyframe_points:
+                                k.co[1] -= 1.570796
+                                k.handle_left[1] -= 1.570796
+                                k.handle_right[1] -= 1.570796
+                            rot_z.update()
 
             # Scale 100
             bpy.ops.transform.resize(value=(100, 100, 100))
