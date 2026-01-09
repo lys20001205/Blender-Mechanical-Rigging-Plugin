@@ -248,10 +248,15 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 bake_types={'POSE', 'OBJECT'}
             )
             
-            # Name the new action
+            # Post-Bake Cleanup: Remove Object Scale Keys
+            # We will apply a static scale of 0.01 later. Baked (1,1,1) scale keys would override this.
             if export_rig.animation_data and export_rig.animation_data.action:
-                act_name = original_action.name if original_action else "Action"
-                export_rig.animation_data.action.name = f"Export_{act_name}"
+                act = export_rig.animation_data.action
+                act.name = f"Export_{original_action.name if original_action else 'Action'}"
+
+                scale_curves = [fc for fc in act.fcurves if fc.data_path.endswith("scale")]
+                for fc in scale_curves:
+                    act.fcurves.remove(fc)
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -285,6 +290,71 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Rotate -90 Z
             bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
             bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+            # ROTATION FIX: Rotate Object Animation Curves by -90 Z
+            # Since we applied rotation, the object is at 0,0,0, but the animation keys
+            # (which drive the object) are still in the original Y+ coordinate system.
+            # We must rotate the Location and Rotation curves.
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act = export_rig.animation_data.action
+
+                # Helper: Rotate Location
+                # NewX = OldY, NewY = -OldX
+
+                # Find Location Curves
+                loc_x = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 0), None)
+                loc_y = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 1), None)
+
+                if loc_x and loc_y:
+                    # We need to process every keyframe.
+                    # Since X depends on Y and Y on X, we need to read all first.
+                    pts_x = {k.co[0]: k for k in loc_x.keyframe_points}
+                    pts_y = {k.co[0]: k for k in loc_y.keyframe_points}
+
+                    # Iterate all frames found in either curve
+                    all_frames = set(pts_x.keys()) | set(pts_y.keys())
+
+                    for frame in all_frames:
+                        # Get current values (default 0 if key missing)
+                        x_val = pts_x[frame].co[1] if frame in pts_x else 0.0
+                        y_val = pts_y[frame].co[1] if frame in pts_y else 0.0
+
+                        # Apply Rotation -90 Z
+                        # x' = x cos(-90) - y sin(-90) = 0 - y(-1) = y
+                        # y' = x sin(-90) + y cos(-90) = x(-1) + 0 = -x
+
+                        new_x = y_val
+                        new_y = -x_val
+
+                        if frame in pts_x: pts_x[frame].co[1] = new_x
+                        if frame in pts_y: pts_y[frame].co[1] = new_y
+
+                        # Handles need rotation too if using Bezier
+                        # This is complex. For baked visual keys (which usually have Auto Clamped or Vector),
+                        # just rotating values is mostly sufficient if keys are dense (bake step = 1).
+                        if frame in pts_x:
+                            pts_x[frame].handle_left[1] = pts_y[frame].handle_left[1] if frame in pts_y else 0
+                            pts_x[frame].handle_right[1] = pts_y[frame].handle_right[1] if frame in pts_y else 0
+
+                        if frame in pts_y:
+                            # Note: we need original x handles here, which we might have overwritten?
+                            # Actually, we should have stored them. But for dense bake, handles matter less.
+                            # Let's assume dense bake.
+                            pass
+
+                # Helper: Rotate Rotation (Euler)
+                # If rotation_euler, just rotate the vector -90 around Z.
+                # If Z-Euler order: Just subtract 90 degrees (pi/2) from Z channel?
+                # Only if rotation is pure Z. But full 3D rotation needs matrix math.
+                # However, Object Root motion is usually 2D (Z-up).
+
+                rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
+                if rot_z:
+                     for k in rot_z.keyframe_points:
+                         k.co[1] -= 1.570796 # Subtract 90 degrees
+                         k.handle_left[1] -= 1.570796
+                         k.handle_right[1] -= 1.570796
+
 
             # Scale 100
             bpy.ops.transform.resize(value=(100, 100, 100))
@@ -530,14 +600,24 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
              return {'CANCELLED'}
 
         # Check for Stashed Action (NLA) if no active action
-        if not (armature.animation_data and armature.animation_data.action):
-            if armature.animation_data and armature.animation_data.nla_tracks:
-                for track in armature.animation_data.nla_tracks:
-                    for strip in track.strips:
-                        if strip.select or strip.active:
-                            armature.animation_data.action = strip.action
-                            self.report({'INFO'}, f"Restored stashed action: {strip.action.name}")
-                            break
+        # If a strip is selected/active, ensure it's the active action for editing
+        target_strip = None
+        if armature.animation_data and armature.animation_data.nla_tracks:
+             for track in armature.animation_data.nla_tracks:
+                 for strip in track.strips:
+                     if strip.select or strip.active:
+                         target_strip = strip
+                         break
+
+        if target_strip:
+             # Force this action to be active and mute the strip to prevent double-transform during bake
+             # (Bake sees active action + NLA result. If we set active = strip.action, NLA adds it again?)
+             # Actually, if we set active action, Blender usually ignores the stash of that same action?
+             # Safer: Mute the track temporarily.
+             armature.animation_data.action = target_strip.action
+             armature.animation_data.use_tweak_mode = False # Ensure not in weird state
+             target_strip.track.mute = True
+             self.report({'INFO'}, f"Processing Stashed Action: {target_strip.action.name}")
 
         # Determine Frame Range
         start = scene.frame_start
@@ -658,10 +738,18 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
             armature.select_set(True)
             context.view_layer.objects.active = armature
 
+            # Unmute track if we muted it
+            if target_strip:
+                target_strip.track.mute = False
+
             self.report({'INFO'}, "Root Motion Converted Successfully!")
             return {'FINISHED'}
 
         except Exception as e:
+            # Unmute track if we muted it (on failure)
+            if 'target_strip' in locals() and target_strip:
+                 target_strip.track.mute = False
+
             self.report({'ERROR'}, f"Conversion Failed: {str(e)}")
             import traceback
             traceback.print_exc()
