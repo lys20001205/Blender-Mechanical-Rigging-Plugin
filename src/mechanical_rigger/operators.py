@@ -610,27 +610,33 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
                          break
 
         if target_strip:
-             # Force this action to be active and mute the strip to prevent double-transform during bake
-             # Safer: Mute the track temporarily.
-
              # Check if object is linked (read-only)
              if armature.library:
                  self.report({'ERROR'}, "Cannot edit linked object.")
                  return {'CANCELLED'}
 
              try:
-                 # Ensure we are not locked in Tweak Mode before switching action
-                 if armature.animation_data.use_tweak_mode:
-                    armature.animation_data.use_tweak_mode = False
+                 # Strategy: Enter NLA Tweak Mode to edit the action.
+                 # This works even if 'animation_data.action' is read-only (e.g. overrides).
 
-                 armature.animation_data.action = target_strip.action
-                 target_strip.track.mute = True
-                 self.report({'INFO'}, f"Processing Stashed Action: {target_strip.action.name}")
-             except AttributeError:
-                 self.report({'ERROR'}, "Could not set Active Action. Ensure Animation Data is editable.")
-                 return {'CANCELLED'}
+                 # 1. Ensure strip is active/selected
+                 target_strip.active = True
+                 target_strip.select = True
+
+                 # 2. Enter Tweak Mode
+                 armature.animation_data.use_tweak_mode = True
+
+                 # 3. Verify
+                 if armature.animation_data.action != target_strip.action:
+                     # If Tweak Mode didn't activate the expected action, try fallback assignment
+                     # (This happens if the NLA logic decides another strip takes precedence?)
+                     armature.animation_data.use_tweak_mode = False
+                     armature.animation_data.action = target_strip.action
+
+                 self.report({'INFO'}, f"Editing Action via NLA: {target_strip.action.name}")
+
              except Exception as e:
-                 self.report({'ERROR'}, f"Error setting action: {e}")
+                 self.report({'ERROR'}, f"Error preparing action: {e}")
                  return {'CANCELLED'}
 
         # Determine Frame Range
@@ -752,17 +758,17 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
             armature.select_set(True)
             context.view_layer.objects.active = armature
 
-            # Unmute track if we muted it
-            if target_strip:
-                target_strip.track.mute = False
+            # Exit Tweak Mode if we entered it
+            if target_strip and armature.animation_data:
+                armature.animation_data.use_tweak_mode = False
 
             self.report({'INFO'}, "Root Motion Converted Successfully!")
             return {'FINISHED'}
 
         except Exception as e:
-            # Unmute track if we muted it (on failure)
-            if 'target_strip' in locals() and target_strip:
-                 target_strip.track.mute = False
+            # Exit Tweak Mode if we entered it (on failure)
+            if 'target_strip' in locals() and target_strip and armature.animation_data:
+                 armature.animation_data.use_tweak_mode = False
 
             self.report({'ERROR'}, f"Conversion Failed: {str(e)}")
             import traceback
