@@ -208,21 +208,14 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Switch to Object Mode to safely handle object selection/data clearing
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # CLEANUP: Clear ONLY Pose animation data on Export Rig before baking
-            # We want a fresh bake for bones (FK keys only), but we MUST preserve Object keys (Root Motion)
-            if export_rig.animation_data and export_rig.animation_data.action:
-                act = export_rig.animation_data.action
-                fcurves_to_remove = []
-                for fc in act.fcurves:
-                    # Remove bone animation, keep object animation
-                    if "pose.bones" in fc.data_path:
-                        fcurves_to_remove.append(fc)
-
-                for fc in fcurves_to_remove:
-                    act.fcurves.remove(fc)
+            # CLEANUP: Completely clear all animation data (Action + NLA) on Export Rig.
+            # We want a fresh bake derived entirely from the Constraints.
+            # This prevents old NLA strips (scale keys, etc.) from bleeding into the result.
+            if export_rig.animation_data:
+                export_rig.animation_data_clear()
 
             # Constrain Export Object to Source Object (to ensure we capture Root Motion updates)
-            # Even if we have keys, baking ensures we burn it all into a clean action
+            # We clear animation data first, so this constraint drives all Object motion.
             c_obj = export_rig.constraints.new('COPY_TRANSFORMS')
             c_obj.target = rig
 
@@ -339,6 +332,52 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                     loc_x.update()
                     loc_y.update()
 
+                # --- Rotation ---
+                # Check Mode
+                mode = export_rig.rotation_mode
+
+                if mode == 'QUATERNION':
+                    # W, X, Y, Z indices 0, 1, 2, 3
+                    rot_w = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 0), None)
+                    rot_x = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 1), None)
+                    rot_y = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 2), None)
+                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 3), None)
+
+                    if rot_w and rot_x and rot_y and rot_z:
+                        count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
+
+                        rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
+
+                        for i in range(count):
+                            pw = rot_w.keyframe_points[i]
+                            px = rot_x.keyframe_points[i]
+                            py = rot_y.keyframe_points[i]
+                            pz = rot_z.keyframe_points[i]
+
+                            old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
+                            new_q = rot_mat_q @ old_q
+
+                            pw.co[1] = new_q.w
+                            px.co[1] = new_q.x
+                            py.co[1] = new_q.y
+                            pz.co[1] = new_q.z
+
+                            # Handles ignored for Quats (complex), but dense bake makes them irrelevant usually.
+
+                        rot_w.update()
+                        rot_x.update()
+                        rot_y.update()
+                        rot_z.update()
+
+                elif mode == 'XYZ': # Euler XYZ
+                    # Z is index 2. Just subtract 90 deg.
+                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
+                    if rot_z:
+                        for k in rot_z.keyframe_points:
+                            k.co[1] -= 1.570796
+                            k.handle_left[1] -= 1.570796
+                            k.handle_right[1] -= 1.570796
+                        rot_z.update()
 
             # Scale 100
             bpy.ops.transform.resize(value=(100, 100, 100))
