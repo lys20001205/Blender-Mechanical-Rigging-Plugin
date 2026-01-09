@@ -619,19 +619,27 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
                  # Strategy: Enter NLA Tweak Mode to edit the action.
                  # This works even if 'animation_data.action' is read-only (e.g. overrides).
 
-                 # 1. Ensure strip is active/selected
-                 target_strip.active = True
+                 # 1. Ensure strip is uniquely selected (defines 'Active' for Tweak Mode)
+                 # We cannot set .active directly (read-only), so we rely on selection.
+                 for track in armature.animation_data.nla_tracks:
+                     for s in track.strips:
+                         s.select = False
+
                  target_strip.select = True
 
                  # 2. Enter Tweak Mode
                  armature.animation_data.use_tweak_mode = True
 
                  # 3. Verify
+                 # Note: In Tweak Mode, .action reflects the tweaked action.
                  if armature.animation_data.action != target_strip.action:
-                     # If Tweak Mode didn't activate the expected action, try fallback assignment
-                     # (This happens if the NLA logic decides another strip takes precedence?)
+                     # Fallback: If tweak mode failed to pick the right one, try direct assignment
+                     # (This might fail if read-only, but it's our last resort)
                      armature.animation_data.use_tweak_mode = False
-                     armature.animation_data.action = target_strip.action
+                     try:
+                        armature.animation_data.action = target_strip.action
+                     except AttributeError:
+                        self.report({'WARNING'}, "Could not force active action. Proceeding with Tweak Mode result.")
 
                  self.report({'INFO'}, f"Editing Action via NLA: {target_strip.action.name}")
 
