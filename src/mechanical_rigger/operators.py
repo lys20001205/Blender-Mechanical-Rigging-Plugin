@@ -487,6 +487,164 @@ class MECH_RIG_OT_ApplyWidgetTransform(bpy.types.Operator):
         self.report({'INFO'}, "Widget Transform Applied.")
         return {'FINISHED'}
 
+class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
+    """Converts Root Bone animation to Armature Object animation."""
+    bl_idname = "mech_rig.convert_root_motion"
+    bl_label = "Convert Root Motion"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            self.report({'ERROR'}, "Active object must be an Armature.")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        root_name = scene.mech_rig_root_bone
+
+        # Auto-detect root if not specified
+        if not root_name:
+            roots = [b.name for b in armature.data.bones if not b.parent]
+            if not roots:
+                self.report({'ERROR'}, "No root bone found.")
+                return {'CANCELLED'}
+            root_name = roots[0]
+            self.report({'INFO'}, f"Auto-detected root bone: {root_name}")
+
+        # Verify bone exists
+        if root_name not in armature.pose.bones:
+             self.report({'ERROR'}, f"Bone '{root_name}' not found in pose.")
+             return {'CANCELLED'}
+
+        # Determine Frame Range
+        start = scene.frame_start
+        end = scene.frame_end
+        if armature.animation_data and armature.animation_data.action:
+            action = armature.animation_data.action
+            start = int(action.frame_range[0])
+            end = int(action.frame_range[1])
+
+        print(f"Converting Root Motion using '{root_name}' (Frames {start}-{end})...")
+
+        try:
+            # --- Phase 1: Capture Relative Motion ---
+
+            # Ensure Object Mode
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            # Create Empty
+            bpy.ops.object.select_all(action='DESELECT')
+            empty = bpy.data.objects.new("Temp_Root_Tracker", None)
+            context.collection.objects.link(empty)
+            empty.empty_display_type = 'PLAIN_AXES'
+
+            # Match Armature Transform
+            empty.matrix_world = armature.matrix_world.copy()
+
+            # Add Child Of Constraint
+            context.view_layer.objects.active = empty
+            empty.select_set(True)
+
+            c = empty.constraints.new('CHILD_OF')
+            c.target = armature
+            c.subtarget = root_name
+
+            # Set Inverse (Fix Offset)
+            # Logic: inverse_matrix = (TargetWorld * BoneMatrix)^-1 * OwnerWorld
+            # OwnerWorld is currently == ArmatureWorld
+
+            pbone = armature.pose.bones[root_name]
+            # Bone World Matrix
+            bone_world = armature.matrix_world @ pbone.matrix
+
+            # Set Inverse: We want VisualWorld to remain EmptyWorld (which is currently ArmatureWorld)
+            # Child Of Formula: World = TargetWorld @ Inverse @ Local
+            # If we set Inverse = TargetWorld.inverted(), then World = TargetWorld @ TargetWorld.inv() @ Local = Local.
+            # Since Local matches our desired World position (ArmatureWorld), this is correct.
+            c.inverse_matrix = bone_world.inverted()
+
+            # --- Phase 2: Bake Empty ---
+
+            # Select Empty (already active/selected)
+            # Bake Action
+            bpy.ops.nla.bake(
+                frame_start=start,
+                frame_end=end,
+                only_selected=True,
+                visual_keying=True,
+                clear_constraints=True,
+                use_current_action=True,
+                bake_types={'OBJECT'}
+            )
+
+            # --- Phase 3: Transfer to Armature & Reset ---
+
+            # Select Armature
+            bpy.ops.object.select_all(action='DESELECT')
+            context.view_layer.objects.active = armature
+            armature.select_set(True)
+
+            # Add Copy Transforms
+            c_arm = armature.constraints.new('COPY_TRANSFORMS')
+            c_arm.target = empty
+
+            # Bake Armature
+            # Note: We are baking Object transforms, so bake_types={'OBJECT'}
+            bpy.ops.nla.bake(
+                frame_start=start,
+                frame_end=end,
+                only_selected=True,
+                visual_keying=True,
+                clear_constraints=True,
+                use_current_action=True,
+                bake_types={'OBJECT'}
+            )
+
+            # Reset Root Bone
+            # Switch to Pose Mode
+            bpy.ops.object.mode_set(mode='POSE')
+
+            # Remove keys
+            if armature.animation_data and armature.animation_data.action:
+                action = armature.animation_data.action
+                fcurves_to_remove = []
+                # Escape the bone name for data path if it has special chars?
+                # bpy.utils.escape_identifier might be needed, but usually bone names are quoted in path
+                # e.g. pose.bones["Root.001"]
+                base_path = f'pose.bones["{root_name}"]'
+
+                for fc in action.fcurves:
+                    # Simple check, might need regex if exact match required
+                    if base_path in fc.data_path:
+                        fcurves_to_remove.append(fc)
+
+                for fc in fcurves_to_remove:
+                    action.fcurves.remove(fc)
+
+            # Reset Transforms
+            pbone = armature.pose.bones[root_name]
+            pbone.location = (0, 0, 0)
+            pbone.rotation_euler = (0, 0, 0)
+            pbone.rotation_quaternion = (1, 0, 0, 0)
+            pbone.scale = (1, 1, 1)
+
+            # --- Cleanup ---
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.data.objects.remove(empty, do_unlink=True)
+
+            # Select Armature
+            armature.select_set(True)
+            context.view_layer.objects.active = armature
+
+            self.report({'INFO'}, "Root Motion Converted Successfully!")
+            return {'FINISHED'}
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Conversion Failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+
 class MECH_RIG_OT_ReloadAddon(bpy.types.Operator):
     """Reloads the addon scripts without restarting Blender"""
     bl_idname = "mech_rig.reload_addon"
@@ -529,6 +687,7 @@ def register():
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.register_class(MECH_RIG_OT_ApplyWidgetTransform)
+    bpy.utils.register_class(MECH_RIG_OT_ConvertRootMotion)
     bpy.utils.register_class(MECH_RIG_OT_ReloadAddon)
 
 def unregister():
@@ -538,4 +697,5 @@ def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.unregister_class(MECH_RIG_OT_ApplyWidgetTransform)
+    bpy.utils.unregister_class(MECH_RIG_OT_ConvertRootMotion)
     bpy.utils.unregister_class(MECH_RIG_OT_ReloadAddon)

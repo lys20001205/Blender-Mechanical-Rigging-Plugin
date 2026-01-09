@@ -56,6 +56,30 @@ class VIEW3D_PT_mech_rig_generate(bpy.types.Panel):
         row = layout.row(align=True)
         row.operator("mech_rig.bake_rig", text="Bake & Export", icon='EXPORT')
 
+class VIEW3D_PT_mech_rig_animation(bpy.types.Panel):
+    """Animation Tools Panel"""
+    bl_label = "Animation"
+    bl_idname = "VIEW3D_PT_mech_rig_animation"
+    bl_parent_id = "VIEW3D_PT_mech_rig_main"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object and context.active_object.type == 'ARMATURE'
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        obj = context.active_object
+
+        layout.label(text="Root Motion to Object:")
+
+        if obj and obj.type == 'ARMATURE':
+             layout.prop_search(scene, "mech_rig_root_bone", obj.pose, "bones", text="Root Bone")
+
+        layout.operator("mech_rig.convert_root_motion", text="Convert Root Motion", icon='ACTION')
+
 class VIEW3D_PT_mech_rig_layers(bpy.types.Panel):
     """Bone Collection Management"""
     bl_label = "Rig Layers"
@@ -387,6 +411,7 @@ classes = (
     MECH_RIG_UL_BoneList,
     VIEW3D_PT_mech_rig_main,
     VIEW3D_PT_mech_rig_generate,
+    VIEW3D_PT_mech_rig_animation,
     VIEW3D_PT_mech_rig_layers,
     VIEW3D_PT_mech_rig_settings,
     VIEW3D_PT_mech_rig_widget_edit,
@@ -420,6 +445,11 @@ def register():
         min=0.01
     )
 
+    bpy.types.Scene.mech_rig_root_bone = bpy.props.StringProperty(
+        name="Root Bone",
+        description="Bone to extract root motion from"
+    )
+
     # Register property with update callback
     bpy.types.Scene.mech_rig_active_bone_index = bpy.props.IntProperty(
         update=update_bone_index
@@ -441,4 +471,5 @@ def unregister():
     del bpy.types.Scene.mech_rig_symmetric_origin
     del bpy.types.Scene.mech_rig_widget_scale
     del bpy.types.Scene.mech_rig_bone_size_scale
+    del bpy.types.Scene.mech_rig_root_bone
     del bpy.types.Scene.mech_rig_active_bone_index
