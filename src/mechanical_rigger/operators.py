@@ -248,12 +248,25 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 visual_keying=True,
                 clear_constraints=True,
                 use_current_action=True,
-                clean_curves=True,
+                clean_curves=False, # Disable clean_curves to ensure dense keys for rotation swap logic
                 bake_types={'POSE', 'OBJECT'}
             )
 
             # Restore Scale locks
             export_rig.lock_scale = prev_lock_scale
+
+            # Remove Baked Scale Keys to ensure static scale works
+            # We locked the scale during bake, so the keys are flat (1.0).
+            # We must remove them so export_rig.scale = (0.01) takes effect.
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act = export_rig.animation_data.action
+                fcurves_to_remove = []
+                for fc in act.fcurves:
+                    if fc.data_path == "scale": # Object Scale
+                         fcurves_to_remove.append(fc)
+
+                for fc in fcurves_to_remove:
+                    act.fcurves.remove(fc)
 
             # Rename Action
             if export_rig.animation_data and export_rig.animation_data.action:
