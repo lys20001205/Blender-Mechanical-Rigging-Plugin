@@ -208,10 +208,23 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Switch to Object Mode to safely handle object selection/data clearing
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # CLEANUP: Clear animation data on Export Rig before baking
-            # We want a fresh bake (FK keys only), not a mix of copied keys and new ones.
-            # This also prevents overwriting the linked action if duplication linked them.
-            export_rig.animation_data_clear()
+            # CLEANUP: Clear ONLY Pose animation data on Export Rig before baking
+            # We want a fresh bake for bones (FK keys only), but we MUST preserve Object keys (Root Motion)
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act = export_rig.animation_data.action
+                fcurves_to_remove = []
+                for fc in act.fcurves:
+                    # Remove bone animation, keep object animation
+                    if "pose.bones" in fc.data_path:
+                        fcurves_to_remove.append(fc)
+
+                for fc in fcurves_to_remove:
+                    act.fcurves.remove(fc)
+
+            # Constrain Export Object to Source Object (to ensure we capture Root Motion updates)
+            # Even if we have keys, baking ensures we burn it all into a clean action
+            c_obj = export_rig.constraints.new('COPY_TRANSFORMS')
+            c_obj.target = rig
 
             # Ensure ONLY Export Rig is selected for Baking
             # (Safety against 'original rig constraints gone' issue)
@@ -232,7 +245,7 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 clear_constraints=True,
                 use_current_action=True,
                 clean_curves=True,
-                bake_types={'POSE'}
+                bake_types={'POSE', 'OBJECT'}
             )
             
             # Name the new action
@@ -515,6 +528,16 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
         if root_name not in armature.pose.bones:
              self.report({'ERROR'}, f"Bone '{root_name}' not found in pose.")
              return {'CANCELLED'}
+
+        # Check for Stashed Action (NLA) if no active action
+        if not (armature.animation_data and armature.animation_data.action):
+            if armature.animation_data and armature.animation_data.nla_tracks:
+                for track in armature.animation_data.nla_tracks:
+                    for strip in track.strips:
+                        if strip.select or strip.active:
+                            armature.animation_data.action = strip.action
+                            self.report({'INFO'}, f"Restored stashed action: {strip.action.name}")
+                            break
 
         # Determine Frame Range
         start = scene.frame_start
