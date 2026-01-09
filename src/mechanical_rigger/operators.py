@@ -611,13 +611,27 @@ class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
 
         if target_strip:
              # Force this action to be active and mute the strip to prevent double-transform during bake
-             # (Bake sees active action + NLA result. If we set active = strip.action, NLA adds it again?)
-             # Actually, if we set active action, Blender usually ignores the stash of that same action?
              # Safer: Mute the track temporarily.
-             armature.animation_data.action = target_strip.action
-             armature.animation_data.use_tweak_mode = False # Ensure not in weird state
-             target_strip.track.mute = True
-             self.report({'INFO'}, f"Processing Stashed Action: {target_strip.action.name}")
+
+             # Check if object is linked (read-only)
+             if armature.library:
+                 self.report({'ERROR'}, "Cannot edit linked object.")
+                 return {'CANCELLED'}
+
+             try:
+                 # Ensure we are not locked in Tweak Mode before switching action
+                 if armature.animation_data.use_tweak_mode:
+                    armature.animation_data.use_tweak_mode = False
+
+                 armature.animation_data.action = target_strip.action
+                 target_strip.track.mute = True
+                 self.report({'INFO'}, f"Processing Stashed Action: {target_strip.action.name}")
+             except AttributeError:
+                 self.report({'ERROR'}, "Could not set Active Action. Ensure Animation Data is editable.")
+                 return {'CANCELLED'}
+             except Exception as e:
+                 self.report({'ERROR'}, f"Error setting action: {e}")
+                 return {'CANCELLED'}
 
         # Determine Frame Range
         start = scene.frame_start
