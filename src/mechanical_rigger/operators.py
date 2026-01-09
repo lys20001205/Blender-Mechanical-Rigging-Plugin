@@ -235,6 +235,10 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Switch back to Pose Mode for Baking (since we bake 'POSE')
             bpy.ops.object.mode_set(mode='POSE')
 
+            # Prevent Scale Baking by locking channels
+            prev_lock_scale = export_rig.lock_scale[:]
+            export_rig.lock_scale = (True, True, True)
+
             # Bake
             # use_current_action=True will create a new Action if none exists
             bpy.ops.nla.bake(
@@ -248,15 +252,13 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 bake_types={'POSE', 'OBJECT'}
             )
             
-            # Post-Bake Cleanup: Remove Object Scale Keys
-            # We will apply a static scale of 0.01 later. Baked (1,1,1) scale keys would override this.
+            # Restore Scale locks
+            export_rig.lock_scale = prev_lock_scale
+
+            # Rename Action
             if export_rig.animation_data and export_rig.animation_data.action:
                 act = export_rig.animation_data.action
                 act.name = f"Export_{original_action.name if original_action else 'Action'}"
-
-                scale_curves = [fc for fc in act.fcurves if fc.data_path.endswith("scale")]
-                for fc in scale_curves:
-                    act.fcurves.remove(fc)
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -292,68 +294,93 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
 
             # ROTATION FIX: Rotate Object Animation Curves by -90 Z
-            # Since we applied rotation, the object is at 0,0,0, but the animation keys
-            # (which drive the object) are still in the original Y+ coordinate system.
-            # We must rotate the Location and Rotation curves.
             if export_rig.animation_data and export_rig.animation_data.action:
                 act = export_rig.animation_data.action
 
-                # Helper: Rotate Location
-                # NewX = OldY, NewY = -OldX
-
-                # Find Location Curves
+                # --- Location ---
+                # Retrieve X and Y location curves (indices 0 and 1)
                 loc_x = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 0), None)
                 loc_y = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 1), None)
 
                 if loc_x and loc_y:
-                    # We need to process every keyframe.
-                    # Since X depends on Y and Y on X, we need to read all first.
-                    pts_x = {k.co[0]: k for k in loc_x.keyframe_points}
-                    pts_y = {k.co[0]: k for k in loc_y.keyframe_points}
+                    # Assume synchronized keyframes (bake result). Iterate by index.
+                    # Safety: Iterate min length
+                    count = min(len(loc_x.keyframe_points), len(loc_y.keyframe_points))
 
-                    # Iterate all frames found in either curve
-                    all_frames = set(pts_x.keys()) | set(pts_y.keys())
+                    for i in range(count):
+                        pt_x = loc_x.keyframe_points[i]
+                        pt_y = loc_y.keyframe_points[i]
 
-                    for frame in all_frames:
-                        # Get current values (default 0 if key missing)
-                        x_val = pts_x[frame].co[1] if frame in pts_x else 0.0
-                        y_val = pts_y[frame].co[1] if frame in pts_y else 0.0
+                        # Capture old values
+                        # Co = (Frame, Value)
+                        old_x = pt_x.co[1]
+                        old_y = pt_y.co[1]
 
-                        # Apply Rotation -90 Z
-                        # x' = x cos(-90) - y sin(-90) = 0 - y(-1) = y
-                        # y' = x sin(-90) + y cos(-90) = x(-1) + 0 = -x
+                        old_hl_x = pt_x.handle_left[1]
+                        old_hl_y = pt_y.handle_left[1]
 
-                        new_x = y_val
-                        new_y = -x_val
+                        old_hr_x = pt_x.handle_right[1]
+                        old_hr_y = pt_y.handle_right[1]
 
-                        if frame in pts_x: pts_x[frame].co[1] = new_x
-                        if frame in pts_y: pts_y[frame].co[1] = new_y
+                        # Apply Rotation -90 Z (X' = Y, Y' = -X)
+                        pt_x.co[1] = old_y
+                        pt_y.co[1] = -old_x
 
-                        # Handles need rotation too if using Bezier
-                        # This is complex. For baked visual keys (which usually have Auto Clamped or Vector),
-                        # just rotating values is mostly sufficient if keys are dense (bake step = 1).
-                        if frame in pts_x:
-                            pts_x[frame].handle_left[1] = pts_y[frame].handle_left[1] if frame in pts_y else 0
-                            pts_x[frame].handle_right[1] = pts_y[frame].handle_right[1] if frame in pts_y else 0
+                        pt_x.handle_left[1] = old_hl_y
+                        pt_y.handle_left[1] = -old_hl_x
 
-                        if frame in pts_y:
-                            # Note: we need original x handles here, which we might have overwritten?
-                            # Actually, we should have stored them. But for dense bake, handles matter less.
-                            # Let's assume dense bake.
-                            pass
+                        pt_x.handle_right[1] = old_hr_y
+                        pt_y.handle_right[1] = -old_hr_x
 
-                # Helper: Rotate Rotation (Euler)
-                # If rotation_euler, just rotate the vector -90 around Z.
-                # If Z-Euler order: Just subtract 90 degrees (pi/2) from Z channel?
-                # Only if rotation is pure Z. But full 3D rotation needs matrix math.
-                # However, Object Root motion is usually 2D (Z-up).
+                    loc_x.update()
+                    loc_y.update()
 
-                rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
-                if rot_z:
-                     for k in rot_z.keyframe_points:
-                         k.co[1] -= 1.570796 # Subtract 90 degrees
-                         k.handle_left[1] -= 1.570796
-                         k.handle_right[1] -= 1.570796
+                # --- Rotation ---
+                # Check Mode
+                mode = export_rig.rotation_mode
+
+                if mode == 'QUATERNION':
+                    # W, X, Y, Z indices 0, 1, 2, 3
+                    rot_w = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 0), None)
+                    rot_x = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 1), None)
+                    rot_y = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 2), None)
+                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 3), None)
+
+                    if rot_w and rot_x and rot_y and rot_z:
+                         count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
+
+                         rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
+
+                         for i in range(count):
+                             pw = rot_w.keyframe_points[i]
+                             px = rot_x.keyframe_points[i]
+                             py = rot_y.keyframe_points[i]
+                             pz = rot_z.keyframe_points[i]
+
+                             old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
+                             new_q = rot_mat_q @ old_q
+
+                             pw.co[1] = new_q.w
+                             px.co[1] = new_q.x
+                             py.co[1] = new_q.y
+                             pz.co[1] = new_q.z
+
+                             # Handles ignored for Quats (complex), but dense bake makes them irrelevant usually.
+
+                         rot_w.update()
+                         rot_x.update()
+                         rot_y.update()
+                         rot_z.update()
+
+                elif mode == 'XYZ': # Euler XYZ
+                    # Z is index 2. Just subtract 90 deg.
+                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
+                    if rot_z:
+                        for k in rot_z.keyframe_points:
+                             k.co[1] -= 1.570796
+                             k.handle_left[1] -= 1.570796
+                             k.handle_right[1] -= 1.570796
+                        rot_z.update()
 
 
             # Scale 100
