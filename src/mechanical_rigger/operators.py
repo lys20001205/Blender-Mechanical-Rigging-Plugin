@@ -191,12 +191,12 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 c = pbone.constraints.new('COPY_TRANSFORMS')
                 c.target = rig
                 c.subtarget = pbone.name
-            
+
             # Bake Action
             # Use Active Action frame range if available
             start = context.scene.frame_start
             end = context.scene.frame_end
-            
+
             original_action = None
             if rig.animation_data and rig.animation_data.action:
                 original_action = rig.animation_data.action
@@ -204,14 +204,27 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 end = int(original_action.frame_range[1])
 
             print(f"Baking frames {start} to {end}...")
-            
+
             # Switch to Object Mode to safely handle object selection/data clearing
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # CLEANUP: Clear animation data on Export Rig before baking
-            # We want a fresh bake (FK keys only), not a mix of copied keys and new ones.
-            # This also prevents overwriting the linked action if duplication linked them.
-            export_rig.animation_data_clear()
+            # CLEANUP: Clear ONLY Pose animation data on Export Rig before baking
+            # We want a fresh bake for bones (FK keys only), but we MUST preserve Object keys (Root Motion)
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act = export_rig.animation_data.action
+                fcurves_to_remove = []
+                for fc in act.fcurves:
+                    # Remove bone animation, keep object animation
+                    if "pose.bones" in fc.data_path:
+                        fcurves_to_remove.append(fc)
+
+                for fc in fcurves_to_remove:
+                    act.fcurves.remove(fc)
+
+            # Constrain Export Object to Source Object (to ensure we capture Root Motion updates)
+            # Even if we have keys, baking ensures we burn it all into a clean action
+            c_obj = export_rig.constraints.new('COPY_TRANSFORMS')
+            c_obj.target = rig
 
             # Ensure ONLY Export Rig is selected for Baking
             # (Safety against 'original rig constraints gone' issue)
@@ -221,6 +234,10 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
 
             # Switch back to Pose Mode for Baking (since we bake 'POSE')
             bpy.ops.object.mode_set(mode='POSE')
+
+            # Prevent Scale Baking by locking channels
+            prev_lock_scale = export_rig.lock_scale[:]
+            export_rig.lock_scale = (True, True, True)
 
             # Bake
             # use_current_action=True will create a new Action if none exists
@@ -232,13 +249,16 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
                 clear_constraints=True,
                 use_current_action=True,
                 clean_curves=True,
-                bake_types={'POSE'}
+                bake_types={'POSE', 'OBJECT'}
             )
-            
-            # Name the new action
+
+            # Restore Scale locks
+            export_rig.lock_scale = prev_lock_scale
+
+            # Rename Action
             if export_rig.animation_data and export_rig.animation_data.action:
-                act_name = original_action.name if original_action else "Action"
-                export_rig.animation_data.action.name = f"Export_{act_name}"
+                act = export_rig.animation_data.action
+                act.name = f"Export_{original_action.name if original_action else 'Action'}"
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -272,6 +292,96 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Rotate -90 Z
             bpy.ops.transform.rotate(value=-1.570796, orient_axis='Z')
             bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+            # ROTATION FIX: Rotate Object Animation Curves by -90 Z
+            if export_rig.animation_data and export_rig.animation_data.action:
+                act = export_rig.animation_data.action
+
+                # --- Location ---
+                # Retrieve X and Y location curves (indices 0 and 1)
+                loc_x = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 0), None)
+                loc_y = next((fc for fc in act.fcurves if fc.data_path == "location" and fc.array_index == 1), None)
+
+                if loc_x and loc_y:
+                    # Assume synchronized keyframes (bake result). Iterate by index.
+                    # Safety: Iterate min length
+                    count = min(len(loc_x.keyframe_points), len(loc_y.keyframe_points))
+
+                    for i in range(count):
+                        pt_x = loc_x.keyframe_points[i]
+                        pt_y = loc_y.keyframe_points[i]
+
+                        # Capture old values
+                        # Co = (Frame, Value)
+                        old_x = pt_x.co[1]
+                        old_y = pt_y.co[1]
+
+                        old_hl_x = pt_x.handle_left[1]
+                        old_hl_y = pt_y.handle_left[1]
+
+                        old_hr_x = pt_x.handle_right[1]
+                        old_hr_y = pt_y.handle_right[1]
+
+                        # Apply Rotation -90 Z (X' = Y, Y' = -X)
+                        pt_x.co[1] = old_y
+                        pt_y.co[1] = -old_x
+
+                        pt_x.handle_left[1] = old_hl_y
+                        pt_y.handle_left[1] = -old_hl_x
+
+                        pt_x.handle_right[1] = old_hr_y
+                        pt_y.handle_right[1] = -old_hr_x
+
+                    loc_x.update()
+                    loc_y.update()
+
+                # --- Rotation ---
+                # Check Mode
+                mode = export_rig.rotation_mode
+
+                if mode == 'QUATERNION':
+                    # W, X, Y, Z indices 0, 1, 2, 3
+                    rot_w = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 0), None)
+                    rot_x = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 1), None)
+                    rot_y = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 2), None)
+                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 3), None)
+
+                    if rot_w and rot_x and rot_y and rot_z:
+                        count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
+
+                        rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
+
+                        for i in range(count):
+                            pw = rot_w.keyframe_points[i]
+                            px = rot_x.keyframe_points[i]
+                            py = rot_y.keyframe_points[i]
+                            pz = rot_z.keyframe_points[i]
+
+                            old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
+                            new_q = rot_mat_q @ old_q
+
+                            pw.co[1] = new_q.w
+                            px.co[1] = new_q.x
+                            py.co[1] = new_q.y
+                            pz.co[1] = new_q.z
+
+                            # Handles ignored for Quats (complex), but dense bake makes them irrelevant usually.
+
+                        rot_w.update()
+                        rot_x.update()
+                        rot_y.update()
+                        rot_z.update()
+
+                elif mode == 'XYZ': # Euler XYZ
+                    # Z is index 2. Just subtract 90 deg.
+                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
+                    if rot_z:
+                        for k in rot_z.keyframe_points:
+                            k.co[1] -= 1.570796
+                            k.handle_left[1] -= 1.570796
+                            k.handle_right[1] -= 1.570796
+                        rot_z.update()
+
 
             # Scale 100
             bpy.ops.transform.resize(value=(100, 100, 100))
@@ -487,6 +597,219 @@ class MECH_RIG_OT_ApplyWidgetTransform(bpy.types.Operator):
         self.report({'INFO'}, "Widget Transform Applied.")
         return {'FINISHED'}
 
+class MECH_RIG_OT_ConvertRootMotion(bpy.types.Operator):
+    """Converts Root Bone animation to Armature Object animation."""
+    bl_idname = "mech_rig.convert_root_motion"
+    bl_label = "Convert Root Motion"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            self.report({'ERROR'}, "Active object must be an Armature.")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        root_name = scene.mech_rig_root_bone
+
+        # Auto-detect root if not specified
+        if not root_name:
+            roots = [b.name for b in armature.data.bones if not b.parent]
+            if not roots:
+                self.report({'ERROR'}, "No root bone found.")
+                return {'CANCELLED'}
+            root_name = roots[0]
+            self.report({'INFO'}, f"Auto-detected root bone: {root_name}")
+
+        # Verify bone exists
+        if root_name not in armature.pose.bones:
+            self.report({'ERROR'}, f"Bone '{root_name}' not found in pose.")
+            return {'CANCELLED'}
+
+        # Check for Stashed Action (NLA) if no active action
+        # If a strip is selected/active, ensure it's the active action for editing
+        target_strip = None
+        if armature.animation_data and armature.animation_data.nla_tracks:
+            for track in armature.animation_data.nla_tracks:
+                for strip in track.strips:
+                    if strip.select or strip.active:
+                        target_strip = strip
+                        break
+
+        if target_strip:
+            # Check if object is linked (read-only)
+            if armature.library:
+                self.report({'ERROR'}, "Cannot edit linked object.")
+                return {'CANCELLED'}
+
+            try:
+                # Strategy: Enter NLA Tweak Mode to edit the action. 
+                # This works even if 'animation_data.action' is read-only (e.g. overrides).
+
+                # 1. Ensure strip is uniquely selected (defines 'Active' for Tweak Mode)
+                # We cannot set .active directly (read-only), so we rely on selection.
+                for track in armature.animation_data.nla_tracks:
+                    for s in track.strips:
+                        s.select = False
+
+                target_strip.select = True
+
+                # 2. Enter Tweak Mode
+                armature.animation_data.use_tweak_mode = True
+
+                # 3. Verify
+                # Note: In Tweak Mode, .action reflects the tweaked action.
+                if armature.animation_data.action != target_strip.action:
+                    # Fallback: If tweak mode failed to pick the right one, try direct assignment
+                    # (This might fail if read-only, but it's our last resort)
+                    armature.animation_data.use_tweak_mode = False
+                    try:
+                        armature.animation_data.action = target_strip.action
+                    except AttributeError:
+                        self.report({'WARNING'}, "Could not force active action. Proceeding with Tweak Mode result.")
+
+                self.report({'INFO'}, f"Editing Action via NLA: {target_strip.action.name}")
+
+            except Exception as e:
+                self.report({'ERROR'}, f"Error preparing action: {e}")
+                return {'CANCELLED'}
+
+        # Determine Frame Range
+        start = scene.frame_start
+        end = scene.frame_end
+        if armature.animation_data and armature.animation_data.action:
+            action = armature.animation_data.action
+            start = int(action.frame_range[0])
+            end = int(action.frame_range[1])
+
+        print(f"Converting Root Motion using '{root_name}' (Frames {start}-{end})...")
+
+        try:
+            # --- Phase 1: Capture Relative Motion ---
+
+            # Ensure Object Mode
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            # Create Empty
+            bpy.ops.object.select_all(action='DESELECT')
+            empty = bpy.data.objects.new("Temp_Root_Tracker", None)
+            context.collection.objects.link(empty)
+            empty.empty_display_type = 'PLAIN_AXES'
+
+            # Match Armature Transform
+            empty.matrix_world = armature.matrix_world.copy()
+
+            # Add Child Of Constraint
+            context.view_layer.objects.active = empty
+            empty.select_set(True)
+
+            c = empty.constraints.new('CHILD_OF')
+            c.target = armature
+            c.subtarget = root_name
+
+            # Set Inverse (Fix Offset)
+            # Logic: inverse_matrix = (TargetWorld * BoneMatrix)^-1 * OwnerWorld
+            # OwnerWorld is currently == ArmatureWorld
+
+            pbone = armature.pose.bones[root_name]
+            # Bone World Matrix
+            bone_world = armature.matrix_world @ pbone.matrix
+
+            # Set Inverse: We want VisualWorld to remain EmptyWorld (which is currently ArmatureWorld)
+            # Child Of Formula: World = TargetWorld @ Inverse @ Local
+            # If we set Inverse = TargetWorld.inverted(), then World = TargetWorld @ TargetWorld.inv() @ Local = Local.
+            # Since Local matches our desired World position (ArmatureWorld), this is correct.
+            c.inverse_matrix = bone_world.inverted()
+
+            # --- Phase 2: Bake Empty ---
+
+            # Select Empty (already active/selected)
+            # Bake Action
+            bpy.ops.nla.bake(
+                frame_start=start,
+                frame_end=end,
+                only_selected=True,
+                visual_keying=True,
+                clear_constraints=True,
+                use_current_action=True,
+                bake_types={'OBJECT'}
+            )
+
+            # --- Phase 3: Transfer to Armature & Reset ---
+
+            # Select Armature
+            bpy.ops.object.select_all(action='DESELECT')
+            context.view_layer.objects.active = armature
+            armature.select_set(True)
+
+            # Add Copy Transforms
+            c_arm = armature.constraints.new('COPY_TRANSFORMS')
+            c_arm.target = empty
+
+            # Bake Armature
+            # Note: We are baking Object transforms, so bake_types={'OBJECT'}
+            bpy.ops.nla.bake(
+                frame_start=start,
+                frame_end=end,
+                only_selected=True,
+                visual_keying=True,
+                clear_constraints=True,
+                use_current_action=True,
+                bake_types={'OBJECT'}
+            )
+
+            # Reset Root Bone
+            # Switch to Pose Mode
+            bpy.ops.object.mode_set(mode='POSE')
+
+            # Remove keys
+            if armature.animation_data and armature.animation_data.action:
+                action = armature.animation_data.action
+                fcurves_to_remove = []
+
+                # Robust path matching
+                pbone_path = armature.pose.bones[root_name].path_from_id()
+
+                for fc in action.fcurves:
+                    # Check if the F-Curve belongs to this bone (location, rotation, etc.)
+                    if fc.data_path.startswith(pbone_path):
+                        fcurves_to_remove.append(fc)
+
+                for fc in fcurves_to_remove:
+                    action.fcurves.remove(fc)
+
+            # Reset Transforms
+            pbone = armature.pose.bones[root_name]
+            pbone.location = (0, 0, 0)
+            pbone.rotation_euler = (0, 0, 0)
+            pbone.rotation_quaternion = (1, 0, 0, 0)
+            pbone.scale = (1, 1, 1)
+
+            # --- Cleanup ---
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.data.objects.remove(empty, do_unlink=True)
+
+            # Select Armature
+            armature.select_set(True)
+            context.view_layer.objects.active = armature
+
+            # Exit Tweak Mode if we entered it
+            if target_strip and armature.animation_data:
+                armature.animation_data.use_tweak_mode = False
+
+            self.report({'INFO'}, "Root Motion Converted Successfully!")
+            return {'FINISHED'}
+
+        except Exception as e:
+            # Exit Tweak Mode if we entered it (on failure)
+            if 'target_strip' in locals() and target_strip and armature.animation_data:
+                armature.animation_data.use_tweak_mode = False
+
+            self.report({'ERROR'}, f"Conversion Failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {'CANCELLED'}
+
 class MECH_RIG_OT_ReloadAddon(bpy.types.Operator):
     """Reloads the addon scripts without restarting Blender"""
     bl_idname = "mech_rig.reload_addon"
@@ -529,6 +852,7 @@ def register():
     bpy.utils.register_class(MECH_RIG_OT_AddControls)
     bpy.utils.register_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.register_class(MECH_RIG_OT_ApplyWidgetTransform)
+    bpy.utils.register_class(MECH_RIG_OT_ConvertRootMotion)
     bpy.utils.register_class(MECH_RIG_OT_ReloadAddon)
 
 def unregister():
@@ -538,4 +862,5 @@ def unregister():
     bpy.utils.unregister_class(MECH_RIG_OT_AddControls)
     bpy.utils.unregister_class(MECH_RIG_OT_EditWidgetTransform)
     bpy.utils.unregister_class(MECH_RIG_OT_ApplyWidgetTransform)
+    bpy.utils.unregister_class(MECH_RIG_OT_ConvertRootMotion)
     bpy.utils.unregister_class(MECH_RIG_OT_ReloadAddon)
