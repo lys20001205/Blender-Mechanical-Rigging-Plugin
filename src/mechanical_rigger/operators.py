@@ -255,10 +255,14 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
             # Restore Scale locks
             export_rig.lock_scale = prev_lock_scale
 
-            # Rename Action
+            # Rename Action and Cleanup Scale Keys (Object Scale must rely on static 0.01)
             if export_rig.animation_data and export_rig.animation_data.action:
                 act = export_rig.animation_data.action
                 act.name = f"Export_{original_action.name if original_action else 'Action'}"
+
+                scale_fcurves = [fc for fc in act.fcurves if fc.data_path == "scale"]
+                for fc in scale_fcurves:
+                    act.fcurves.remove(fc)
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -334,53 +338,6 @@ class MECH_RIG_OT_BakeRig(bpy.types.Operator):
 
                     loc_x.update()
                     loc_y.update()
-
-                # --- Rotation ---
-                # Check Mode
-                mode = export_rig.rotation_mode
-
-                if mode == 'QUATERNION':
-                    # W, X, Y, Z indices 0, 1, 2, 3
-                    rot_w = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 0), None)
-                    rot_x = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 1), None)
-                    rot_y = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 2), None)
-                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_quaternion" and fc.array_index == 3), None)
-
-                    if rot_w and rot_x and rot_y and rot_z:
-                        count = min(len(rot_w.keyframe_points), len(rot_x.keyframe_points), len(rot_y.keyframe_points), len(rot_z.keyframe_points))
-
-                        rot_mat_q = mathutils.Quaternion((0, 0, 1), -1.570796) # -90 Z
-
-                        for i in range(count):
-                            pw = rot_w.keyframe_points[i]
-                            px = rot_x.keyframe_points[i]
-                            py = rot_y.keyframe_points[i]
-                            pz = rot_z.keyframe_points[i]
-
-                            old_q = mathutils.Quaternion((pw.co[1], px.co[1], py.co[1], pz.co[1]))
-                            new_q = rot_mat_q @ old_q
-
-                            pw.co[1] = new_q.w
-                            px.co[1] = new_q.x
-                            py.co[1] = new_q.y
-                            pz.co[1] = new_q.z
-
-                            # Handles ignored for Quats (complex), but dense bake makes them irrelevant usually.
-
-                        rot_w.update()
-                        rot_x.update()
-                        rot_y.update()
-                        rot_z.update()
-
-                elif mode == 'XYZ': # Euler XYZ
-                    # Z is index 2. Just subtract 90 deg.
-                    rot_z = next((fc for fc in act.fcurves if fc.data_path == "rotation_euler" and fc.array_index == 2), None)
-                    if rot_z:
-                        for k in rot_z.keyframe_points:
-                            k.co[1] -= 1.570796
-                            k.handle_left[1] -= 1.570796
-                            k.handle_right[1] -= 1.570796
-                        rot_z.update()
 
 
             # Scale 100
