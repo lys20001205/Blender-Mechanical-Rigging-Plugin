@@ -723,8 +723,15 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
             final_tail = final_head + (z_axis * length)
 
+            # Check for Phys_Wheel collection
+            # "The Right-side wheel bone should have the exact same Global Orientation... as the Left-side"
+            # So if Phys_Wheel, we do NOT mirror the tail vector or roll axis.
+            is_phys_wheel = any(c.name.startswith("Phys_Wheel") for c in node.origin_obj.users_collection)
+
             # Handle Mirroring for Vector/Tail
-            if node.is_mirrored_side == 'R' and symmetric_origin:
+            should_mirror_orientation = (node.is_mirrored_side == 'R' and symmetric_origin and not is_phys_wheel)
+
+            if should_mirror_orientation:
                 origin_mat = symmetric_origin.matrix_world
                 z_local = origin_mat.inverted().to_3x3() @ z_axis
                 z_local.x *= -1 # Mirror X
@@ -737,7 +744,7 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
             # Align Bone Z to Object X (mat.col[0]) for consistency
             x_axis = mat.col[0].xyz.normalized()
-            if node.is_mirrored_side == 'R' and symmetric_origin:
+            if should_mirror_orientation:
                 origin_mat = symmetric_origin.matrix_world
                 x_local = origin_mat.inverted().to_3x3() @ x_axis
                 x_local.x *= -1
