@@ -703,55 +703,6 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
         return final_head
 
-    def create_bones_recursive(nodes, parent_bone=None):
-        for node in nodes:
-            if node.name in amt.edit_bones:
-                bone = amt.edit_bones[node.name]
-            else:
-                bone = amt.edit_bones.new(node.name)
-
-            obj = node.origin_obj
-            mat = obj.matrix_world
-
-            final_head = calculate_bone_head(node)
-
-            # Align Bone to Object's Local Z axis (Y of bone = Z of object)
-            z_axis = mat.col[2].xyz.normalized()
-
-            # Readability: Use max dimension or scale, with minimum
-            length = max(obj.dimensions.length * 0.5, 0.2) * context.scene.mech_rig_bone_size_scale
-
-            final_tail = final_head + (z_axis * length)
-
-            # Handle Mirroring for Vector/Tail
-            if node.is_mirrored_side == 'R' and symmetric_origin:
-                origin_mat = symmetric_origin.matrix_world
-                z_local = origin_mat.inverted().to_3x3() @ z_axis
-                z_local.x *= -1 # Mirror X
-                z_mirrored = origin_mat.to_3x3() @ z_local
-
-                final_tail = final_head + (z_mirrored * length)
-
-            bone.head = final_head
-            bone.tail = final_tail
-
-            # Align Bone Z to Object X (mat.col[0]) for consistency
-            x_axis = mat.col[0].xyz.normalized()
-            if node.is_mirrored_side == 'R' and symmetric_origin:
-                origin_mat = symmetric_origin.matrix_world
-                x_local = origin_mat.inverted().to_3x3() @ x_axis
-                x_local.x *= -1
-                x_mirrored = origin_mat.to_3x3() @ x_local
-                bone.align_roll(x_mirrored)
-            else:
-                bone.align_roll(x_axis)
-
-            if parent_bone:
-                bone.parent = parent_bone
-                bone.use_connect = False # Disable connection
-
-            node_to_bone[node] = bone.name
-            create_bones_recursive(node.children, bone)
 
     # -------------------------------------------------------------
     # PRE-PASS: Identify Piston Targets for Look-At Alignment
@@ -870,28 +821,42 @@ def create_armature(context, rig_roots, symmetric_origin, armature_obj=None):
 
                 final_tail = final_head + (z_axis * length)
 
-                # Handle Mirroring for Vector/Tail
-                if node.is_mirrored_side == 'R' and symmetric_origin:
+            # Check for Phys_Wheel exception
+            is_phys_wheel = False
+            for col in node.origin_obj.users_collection:
+                if col.name.startswith("Phys_Wheel"):
+                    is_phys_wheel = True
+                    break
+
+            # Handle Mirroring for Vector/Tail
+            if node.is_mirrored_side == 'R' and symmetric_origin:
+                if is_phys_wheel:
+                    # Force parallel orientation for Phys_Wheel
+                    final_tail = final_head + (z_axis * length)
+                else:
                     origin_mat = symmetric_origin.matrix_world
                     z_local = origin_mat.inverted().to_3x3() @ z_axis
                     z_local.x *= -1 # Mirror X
                     z_mirrored = origin_mat.to_3x3() @ z_local
-
                     final_tail = final_head + (z_mirrored * length)
 
-                bone.head = final_head
-                bone.tail = final_tail
+            bone.head = final_head
+            bone.tail = final_tail
 
-                # Align Bone Z to Object X (mat.col[0]) for consistency
-                x_axis = mat.col[0].xyz.normalized()
-                if node.is_mirrored_side == 'R' and symmetric_origin:
+            # Align Bone Z to Object X (mat.col[0]) for consistency
+            x_axis = mat.col[0].xyz.normalized()
+            if node.is_mirrored_side == 'R' and symmetric_origin:
+                if is_phys_wheel:
+                    # Force parallel roll alignment
+                    bone.align_roll(x_axis)
+                else:
                     origin_mat = symmetric_origin.matrix_world
                     x_local = origin_mat.inverted().to_3x3() @ x_axis
                     x_local.x *= -1
                     x_mirrored = origin_mat.to_3x3() @ x_local
                     bone.align_roll(x_mirrored)
-                else:
-                    bone.align_roll(x_axis)
+            else:
+                bone.align_roll(x_axis)
 
             if parent_bone:
                 bone.parent = parent_bone
